@@ -124,13 +124,7 @@ class InputGhost:
                 cls.waitForClipboard(row)
                 time.sleep(cls._WAIT_TIME)
 
-            # キーを送る直前に、前面がまだ入力先か確かめます。1 つの操作の途中では止めません。
-            if user32.GetForegroundWindow() != targetWindow:
-                raise GreenException(
-                    'Foreground window changed, so InputGhost stopped before '
-                    f'action {index + 1}/{len(actions)} ({key}). '
-                    f'{index} actions already sent stay in the target window; '
-                    'no key is left pressed.')
+            # 一時的な mutation: 前面チェックを外して E2E が落ちることを確かめる。
 
             if key in ['0']:
                 user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
