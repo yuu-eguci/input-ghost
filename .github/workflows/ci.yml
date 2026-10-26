@@ -25,3 +25,8 @@ jobs:
         run: python InputGhost.py --dry-run
         env:
           PYTHONIOENCODING: utf-8
+      - name: E2E with real keys (repo-owned throwaway windows on this runner only)
+        run: python -m pytest tests/test_e2e_windows.py -v -rs
+        timeout-minutes: 5
+        env:
+          INPUTGHOST_E2E: '1'
