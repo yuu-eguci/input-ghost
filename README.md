@@ -11,6 +11,7 @@ It automatically pastes text lines to other application. Only available for Wind
 - `inputGhost.txt` (cp932) を読み、各行を `NUM_CHARA_IN_ROW` 文字ずつに分割します。
 - 分割した文字列ごとに、focus されている window へ clipboard と `keybd_event` を使って `KEY_ORDER` (`'0'`・`'return'`・`'copypaste'`) を実行します。
 - 設定は `InputGhostSetting.py` に書きます。不正な `KEY_ORDER` は、入力を始める前に検出します。
+- `copypaste` では、clipboard が貼り付けたい文字列になるまで 0.1 秒ごとに確認します。`CLIPBOARD_TIMEOUT` 秒 (既定 5 秒) 待っても変わらない場合は、Ctrl+V を送らずに `GreenException` で停止します。それまでに送った入力は入力先に残ります。押しっぱなしの key はありません。
 
 ## 実行環境
 
