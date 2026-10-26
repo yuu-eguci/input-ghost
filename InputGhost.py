@@ -20,6 +20,8 @@ windows専用。
 バージョン1.4
     --dry-run で、入力せずに予定の操作を表示するだけにできるようにした。
     KEY_ORDER の誤りは入力を始める前に検出するようにした。
+バージョン1.5
+    クリップボードがいつまでも変わらないと無限に待っていたので、CLIPBOARD_TIMEOUT 秒で止めるようにした。
 '''
 
 
@@ -45,6 +47,9 @@ class InputGhost:
     _KEY_ORDER = InputGhostSetting.KEY_ORDER
     # コピペ時の待機秒数。
     _WAIT_TIME = InputGhostSetting.WAIT_TIME
+    # クリップボード待ちの最大秒数と確認間隔。
+    _CLIPBOARD_TIMEOUT = InputGhostSetting.CLIPBOARD_TIMEOUT
+    _CLIPBOARD_INTERVAL = 0.1
     # 実行後の待機秒数。
     _READY_TIME = InputGhostSetting.READY_TIME
 
@@ -107,15 +112,25 @@ class InputGhost:
                 pyperclip.copy(row)
                 # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
                 # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
-                while True:
-                    if pyperclip.paste() == row:
-                        break
-                    time.sleep(0.1)
+                cls.waitForClipboard(row)
                 time.sleep(cls._WAIT_TIME)
                 user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
                 user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
+
+    @classmethod
+    def waitForClipboard(cls, row):
+        '''クリップボードが row になるまで待ちます。CLIPBOARD_TIMEOUT 秒を過ぎたら止めます。'''
+
+        deadline = time.monotonic() + cls._CLIPBOARD_TIMEOUT
+        while pyperclip.paste() != row:
+            if time.monotonic() >= deadline:
+                raise GreenException(
+                    f'Clipboard did not become {row!r} within '
+                    f'{cls._CLIPBOARD_TIMEOUT}s. Stopped before Ctrl+V; '
+                    'input already sent stays in the target window.')
+            time.sleep(cls._CLIPBOARD_INTERVAL)
 
     @classmethod
     def bringTargetApplication(cls):

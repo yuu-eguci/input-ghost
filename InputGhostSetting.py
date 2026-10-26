@@ -14,5 +14,7 @@ TARGET_APPLICATION = 'notepad.exe'
 KEY_ORDER = ('0', 'return', 'copypaste', 'return')
 # コピペ時の待機秒数。なんかねーノーウェイトで走らせるとヘンにコピペが失敗するときあって…。
 WAIT_TIME = 1
+# クリップボードが貼りたい文字列になるまで待つ最大秒数。過ぎたら Ctrl+V せずに止まるよ。
+CLIPBOARD_TIMEOUT = 5
 # 実行後の待機秒数。使わないならFalseにしてね。
 READY_TIME = 5

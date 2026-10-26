@@ -30,6 +30,23 @@ class Forbidden:
         raise AssertionError('dry-run で副作用のある関数が呼ばれた')
 
 
+class FakeClock:
+    '''sleep した分だけ monotonic が進む偽の time。本当には待たない。'''
+
+    def __init__(self):
+        self.now = 0.0
+        self.sleeps = 0
+
+    def monotonic(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.sleeps += 1
+        if self.sleeps > 10000:
+            raise AssertionError('待ちループが止まらない')
+        self.now += seconds
+
+
 @pytest.fixture
 def ghost(tmp_path, monkeypatch):
     '''合成テキストと偽の Windows 環境を用意する。'''
@@ -43,7 +60,7 @@ def ghost(tmp_path, monkeypatch):
     monkeypatch.setattr(ig.InputGhost, '_WAIT_TIME', 0)
     monkeypatch.setattr(ig.InputGhost, '_READY_TIME', 1)
     monkeypatch.setattr(ig.begin_set, 'exec_all', lambda file_name: None)
-    monkeypatch.setattr(ig.time, 'sleep', lambda seconds: None)
+    monkeypatch.setattr(ig, 'time', FakeClock())
 
     clipboard = {'text': ''}
     monkeypatch.setattr(
@@ -71,6 +88,34 @@ def test_real_run_sends_key_order_for_each_chunk(ghost):
         (13, 0), (13, KEYUP),
     ]
     assert ghost.events == one_row * 3
+
+
+def test_clipboard_that_updates_late_is_still_pasted(ghost, monkeypatch):
+    synced_paste = ig.pyperclip.paste
+    calls = []
+
+    def late_paste():
+        calls.append(None)
+        return 'stale' if len(calls) <= 3 else synced_paste()
+
+    monkeypatch.setattr(ig.pyperclip, 'paste', late_paste)
+
+    ig.InputGhost.run()
+
+    assert ghost.events.count((86, 0)) == 3
+
+
+def test_stale_clipboard_stops_before_paste(ghost, monkeypatch):
+    monkeypatch.setattr(ig.InputGhost, '_CLIPBOARD_TIMEOUT', 2)
+    monkeypatch.setattr(ig.InputGhost, '_READY_TIME', 0)
+    monkeypatch.setattr(ig.pyperclip, 'paste', lambda: 'stale')
+
+    with pytest.raises(ig.GreenException, match="'あいうえお'.* within 2s"):
+        ig.InputGhost.run()
+
+    # 1 行目の '0' と 'return' だけ送られて、Ctrl+V は送られない。
+    assert ghost.events == [(48, 0), (48, KEYUP), (13, 0), (13, KEYUP)]
+    assert 2 <= ig.time.now < 2.2
 
 
 def test_invalid_key_order_is_rejected_before_any_input(ghost, monkeypatch):
