@@ -13,6 +13,13 @@ It automatically pastes text lines to other application. Only available for Wind
 - 設定は `InputGhostSetting.py` に書きます。不正な `KEY_ORDER` は、入力を始める前に検出します。
 - `copypaste` では、clipboard が貼り付けたい文字列になるまで 0.1 秒ごとに確認します。`CLIPBOARD_TIMEOUT` 秒 (既定 5 秒) 待っても変わらない場合は、Ctrl+V を送らずに `GreenException` で停止します。それまでに送った入力は入力先に残ります。押しっぱなしの key はありません。
 
+## 入力先の確認と停止
+
+- 通常実行では、カウントダウン後 (`READY_TIME = False` ならアプリ起動の 1 秒後) に前面にある window を入力先として記録します。前面が InputGhost を起動した window のまま、または前面に window がない場合は、何も送らずに停止します。
+- 各操作の key を送る直前に、前面の window が入力先のままか確認します。変わっていたら次の key を送らずに `GreenException` で停止し、何番目の操作で止まったかを表示します。それまでに送った入力は入力先に残ります。
+- 止めたいときは、別の window をクリックするか Alt+Tab してください (Win+L でも止まります)。入力先のアプリが dialog を開いた場合も停止します。
+- 制限: 1 つの操作 (Ctrl+V など) の key の途中では確認しないため、押しっぱなしの key は残りません。管理者権限で動くアプリには、Windows の UIPI の制限で入力が届かないことがあり、これは検出できません。
+
 ## 実行環境
 
 - Windows + Python 3 (CI は `windows-latest` 上の 3.13 を使います)

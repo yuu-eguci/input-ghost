@@ -1,6 +1,6 @@
 '''InputGhost のテスト。
 
-Windows の入力(keybd_event)・クリップボード・アプリ起動はすべて偽物に差し替える。
+Windows の入力(keybd_event)・前面 window・クリップボード・アプリ起動はすべて偽物に差し替える。
 本物のキー入力は絶対に送らない。'''
 
 import pytest
@@ -8,13 +8,24 @@ import pytest
 import InputGhost as ig
 
 KEYUP = 0x2
+# 偽の window handle。起動元の console・入力先・別の window。
+CONSOLE, TARGET, OTHER = 100, 200, 300
 
 
 class FakeUser32:
-    '''keybd_event の呼び出しを記録するだけの偽 user32。'''
+    '''keybd_event を記録し、前面の window を偽装する偽 user32。
+
+    foregrounds の先頭から順に返し、最後の 1 つは返し続ける。
+    既定は「起動時は console、カウントダウン後は入力先」。'''
 
     def __init__(self):
         self.events = []
+        self.foregrounds = [CONSOLE, TARGET]
+
+    def GetForegroundWindow(self):
+        if len(self.foregrounds) > 1:
+            return self.foregrounds.pop(0)
+        return self.foregrounds[0]
 
     def keybd_event(self, keycode, scan, flags, extra):
         self.events.append((keycode, flags))
@@ -36,6 +47,7 @@ class FakeClock:
     def __init__(self):
         self.now = 0.0
         self.sleeps = 0
+        self.onSleep = None
 
     def monotonic(self):
         return self.now
@@ -45,6 +57,8 @@ class FakeClock:
         if self.sleeps > 10000:
             raise AssertionError('待ちループが止まらない')
         self.now += seconds
+        if self.onSleep:
+            self.onSleep()
 
 
 @pytest.fixture
@@ -116,6 +130,35 @@ def test_stale_clipboard_stops_before_paste(ghost, monkeypatch):
     # 1 行目の '0' と 'return' だけ送られて、Ctrl+V は送られない。
     assert ghost.events == [(48, 0), (48, KEYUP), (13, 0), (13, KEYUP)]
     assert 2 <= ig.time.now < 2.2
+
+
+@pytest.mark.parametrize('foregrounds', [[CONSOLE], [CONSOLE, 0]])
+@pytest.mark.parametrize('ready_time', [1, False])
+def test_no_new_target_window_sends_nothing(
+        ghost, monkeypatch, ready_time, foregrounds):
+    monkeypatch.setattr(ig.InputGhost, '_READY_TIME', ready_time)
+    monkeypatch.setattr(ig.subprocess, 'Popen', lambda *args, **kwargs: None)
+    ghost.foregrounds = foregrounds
+
+    with pytest.raises(ig.GreenException, match='Nothing was sent'):
+        ig.InputGhost.run()
+
+    assert ghost.events == []
+
+
+def test_focus_change_stops_before_next_key(ghost):
+    def steal_focus():
+        # カウントダウン中ではなく、入力が始まってからの sleep で前面を奪う。
+        if ghost.events:
+            ghost.foregrounds = [OTHER]
+
+    ig.time.onSleep = steal_focus
+
+    with pytest.raises(ig.GreenException, match=r'before action 3/12'):
+        ig.InputGhost.run()
+
+    # 1 行目の '0' と 'return' だけ送られて、Ctrl+V は送られない。
+    assert ghost.events == [(48, 0), (48, KEYUP), (13, 0), (13, KEYUP)]
 
 
 def test_invalid_key_order_is_rejected_before_any_input(ghost, monkeypatch):
