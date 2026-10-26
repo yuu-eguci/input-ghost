@@ -95,8 +95,18 @@ class Target:
     def bringToFront(self):
         '''1 秒以内に前面にできなければ False。そのときは何も入力させないこと。'''
 
+        # 前面でない process の SetForegroundWindow は foreground lock で断られるので、
+        # 今の前面の thread に一時的に入力 queue をつないでから呼ぶ。key は送らない。
         user32 = ctypes.windll.user32
-        user32.SetForegroundWindow(self.hwnd)
+        me = ctypes.windll.kernel32.GetCurrentThreadId()
+        front = user32.GetWindowThreadProcessId(user32.GetForegroundWindow(), None)
+        attached = front not in (0, me) and user32.AttachThreadInput(me, front, True)
+        try:
+            user32.BringWindowToTop(self.hwnd)
+            user32.SetForegroundWindow(self.hwnd)
+        finally:
+            if attached:
+                user32.AttachThreadInput(me, front, False)
         return wait_until(lambda: user32.GetForegroundWindow() == self.hwnd, 1)
 
 
