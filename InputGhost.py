@@ -17,9 +17,13 @@ windows専用。
     対象の人のPCでうまく動かなかったから……。
 バージョン1.3(2017-08-21)
     自動入力実行前に待機することができるようにした。
+バージョン1.4
+    --dry-run で、入力せずに予定の操作を表示するだけにできるようにした。
+    KEY_ORDER の誤りは入力を始める前に検出するようにした。
 '''
 
 
+import argparse
 import ctypes
 import subprocess
 import time
@@ -51,14 +55,20 @@ class InputGhost:
     _KEYCODE_V = 86
 
     @classmethod
-    def run(cls):
+    def run(cls, dryRun=False):
         '''トップレベルメソッド。'''
 
         # いつもの前準備。
         begin_set.exec_all(__file__)
 
-        # 入力する文字列を用意します。
-        inputTextList = cls.getInputTextList()
+        # 入力する文字列を用意して、入力前に操作の一覧を作ります。
+        actions = cls.buildActions(cls.getInputTextList())
+
+        if dryRun:
+            for key, row in actions:
+                print(f'paste {row}' if key == 'copypaste' else f'key {key}')
+            print('dry-run: no input was sent.')
+            return
 
         if cls._READY_TIME is False:
             # 対象アプリケーションを引っ張り出します。
@@ -69,37 +79,43 @@ class InputGhost:
                 time.sleep(1)
                 print(cls._READY_TIME - count)
 
-        # 文字列リストをぐるぐるしながら自動入力します。
-        cls.inputAutomatically(inputTextList)
+        # 操作の一覧をぐるぐるしながら自動入力します。
+        cls.inputAutomatically(actions)
 
     @classmethod
-    def inputAutomatically(cls, inputTextList):
-        '''文字列リストをぐるぐるしながら自動入力します。'''
+    def buildActions(cls, inputTextList):
+        '''(キー, 文字列) の操作一覧を作ります。KEY_ORDER の誤りはここで弾きます。'''
+
+        for key in cls._KEY_ORDER:
+            if key not in ('0', 'return', 'copypaste'):
+                raise GreenException(f'Invalid KEY_ORDER:{key}')
+        return [(key, row) for row in inputTextList for key in cls._KEY_ORDER]
+
+    @classmethod
+    def inputAutomatically(cls, actions):
+        '''操作の一覧をぐるぐるしながら自動入力します。'''
 
         user32 = ctypes.windll.user32
-        for row in inputTextList:
-            for key in cls._KEY_ORDER:
-                if key in ['0']:
-                    user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
-                elif key in ['return']:
-                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
-                elif key in ['copypaste']:
-                    pyperclip.copy(row)
-                    # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
-                    # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
-                    while True:
-                        if pyperclip.paste() == row:
-                            break
-                        time.sleep(0.1)
-                    time.sleep(cls._WAIT_TIME)
-                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
-                    user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
-                else:
-                    raise GreenException(f'Invalid KEY_ORDER:{key}')
+        for key, row in actions:
+            if key in ['0']:
+                user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
+                user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
+            elif key in ['return']:
+                user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
+                user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
+            elif key in ['copypaste']:
+                pyperclip.copy(row)
+                # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
+                # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
+                while True:
+                    if pyperclip.paste() == row:
+                        break
+                    time.sleep(0.1)
+                time.sleep(cls._WAIT_TIME)
+                user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
+                user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
+                user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
+                user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
 
     @classmethod
     def bringTargetApplication(cls):
@@ -139,5 +155,14 @@ class GreenException(Exception):
         return self.error_message
 
 
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='文章を別のアプリケーションに一行ずつコピペします。')
+    parser.add_argument(
+        '--dry-run', action='store_true',
+        help='キー入力・クリップボード・アプリ起動をせず、予定の操作を表示するだけ。')
+    args = parser.parse_args(argv)
+    InputGhost.run(dryRun=args.dry_run)
+
+
 if __name__ == '__main__':
-    InputGhost.run()
+    main()
