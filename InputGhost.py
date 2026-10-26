@@ -22,6 +22,8 @@ windows専用。
     KEY_ORDER の誤りは入力を始める前に検出するようにした。
 バージョン1.5
     クリップボードがいつまでも変わらないと無限に待っていたので、CLIPBOARD_TIMEOUT 秒で止めるようにした。
+バージョン1.6
+    前面の window を入力先として記録し、起動元のままだったり途中で変わったりしたら止めるようにした。
 '''
 
 
@@ -75,6 +77,11 @@ class InputGhost:
             print('dry-run: no input was sent.')
             return
 
+        # 起動元(コンソールとか)の window を覚えておきます。
+        # HWND は 32bit で比べても大丈夫なので、ctypes の既定の int のまま比べます。
+        user32 = ctypes.windll.user32
+        startWindow = user32.GetForegroundWindow()
+
         if cls._READY_TIME is False:
             # 対象アプリケーションを引っ張り出します。
             cls.bringTargetApplication()
@@ -84,8 +91,16 @@ class InputGhost:
                 time.sleep(1)
                 print(cls._READY_TIME - count)
 
+        # このとき前面にある window を入力先にします。起動元のままなら入力しません。
+        targetWindow = user32.GetForegroundWindow()
+        if targetWindow in (0, startWindow):
+            raise GreenException(
+                'The target window is not in front (focus is still on the '
+                'window that started InputGhost, or on no window). '
+                'Nothing was sent.')
+
         # 操作の一覧をぐるぐるしながら自動入力します。
-        cls.inputAutomatically(actions)
+        cls.inputAutomatically(actions, targetWindow)
 
     @classmethod
     def buildActions(cls, inputTextList):
@@ -97,11 +112,26 @@ class InputGhost:
         return [(key, row) for row in inputTextList for key in cls._KEY_ORDER]
 
     @classmethod
-    def inputAutomatically(cls, actions):
-        '''操作の一覧をぐるぐるしながら自動入力します。'''
+    def inputAutomatically(cls, actions, targetWindow):
+        '''操作の一覧をぐるぐるしながら自動入力します。前面が targetWindow でなくなったら止めます。'''
 
         user32 = ctypes.windll.user32
-        for key, row in actions:
+        for index, (key, row) in enumerate(actions):
+            if key in ['copypaste']:
+                pyperclip.copy(row)
+                # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
+                # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
+                cls.waitForClipboard(row)
+                time.sleep(cls._WAIT_TIME)
+
+            # キーを送る直前に、前面がまだ入力先か確かめます。1 つの操作の途中では止めません。
+            if user32.GetForegroundWindow() != targetWindow:
+                raise GreenException(
+                    'Foreground window changed, so InputGhost stopped before '
+                    f'action {index + 1}/{len(actions)} ({key}). '
+                    f'{index} actions already sent stay in the target window; '
+                    'no key is left pressed.')
+
             if key in ['0']:
                 user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
@@ -109,11 +139,6 @@ class InputGhost:
                 user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
             elif key in ['copypaste']:
-                pyperclip.copy(row)
-                # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
-                # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
-                cls.waitForClipboard(row)
-                time.sleep(cls._WAIT_TIME)
                 user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
