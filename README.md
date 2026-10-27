@@ -8,7 +8,7 @@ It automatically pastes text lines to other application. Only available for Wind
 
 ## 仕組み
 
-- `inputGhost.txt` (cp932) を読み、各行を `NUM_CHARA_IN_ROW` 文字ずつに分割します。
+- `TEXT_FILE_NAME` (既定 `inputGhost.txt`) を読み、各行を `NUM_CHARA_IN_ROW` 文字ずつに分割します。文字コードの決め方は「入力ファイルの文字コード」を見てください。
 - 分割した文字列ごとに、focus されている window へ clipboard と `SendInput` を使って `KEY_ORDER` (`'0'`・`'return'`・`'copypaste'`) を実行します。
 - 設定は `InputGhostSetting.py` に書きます。不正な `KEY_ORDER` は、入力を始める前に検出します。
 - 1 つの操作の key (Ctrl+V なら Ctrl・V を押して離す 4 つ) は、`SendInput` で 1 回にまとめて送り、Windows が受け付けた数を確認します。全部を受け付けなかった場合は、押したままの key を離してから `GreenException` で停止し、clipboard を戻します。ただし、管理者権限のアプリに UIPI で止められた入力や、別のプログラムが `BlockInput` で止めた入力は、受け付けた数に表れないため検出できません (`BlockInput` は GitHub の Windows runner で確認しました)。
@@ -17,6 +17,18 @@ It automatically pastes text lines to other application. Only available for Wind
 - 通常実行では、入力を始める前に clipboard の文字列を覚えておきます。終わったとき・途中で止まったとき (タイムアウト・前面の変化・エラー・Ctrl+C) は、最後の Ctrl+V から `PASTE_SETTLE_TIME` 秒待ってから元に戻します。clipboard を一度も書き換えていなければ、何もしません。
 - 戻せるのは文字列だけです。HTML・RTF などの書式は消え、文字列だけが戻ります。空の clipboard は空に戻します。画像やファイルなど文字列のない clipboard は戻せないため、clipboard に触らず、何も送らずに停止します。
 - clipboard を戻せなかった場合、元のエラーで止まったときはそのエラーのまま終了し、戻せなかったことを stderr に表示します。正常に終わったあとに戻せなかった場合は、そのエラーで終了します。
+
+## 入力ファイルの文字コード
+
+- 既定の `TEXT_ENCODING = 'auto'` では、次の順に決めます。
+  1. UTF-8 か UTF-16 の BOM があれば、その文字コードで読みます。
+  2. ASCII の文字だけなら、そのまま読みます (UTF-8 でも cp932 でも同じ文字です)。
+  3. UTF-8 と cp932 のどちらか片方でしか読めなければ、読める方で読みます。
+  4. どちらでも読めて、読んだ結果が違う場合は、決めつけずに停止します。UTF-8 の日本語が cp932 としても読めてしまう (例: 「こんにちは世界」が「縺薙ｓ縺ｫ…」になる) ことや、cp932 の半角カナが UTF-8 としても読めてしまう (例: 「ﾃｩ」が「é」になる) ことがあるためです。`TEXT_ENCODING` に `'utf-8'` か `'cp932'` を書いてください。
+  5. どちらでも読めない場合も停止します。
+- `TEXT_ENCODING` に文字コードの名前 (`'utf-8'`・`'cp932'` など) を書くと、その文字コードだけで厳密に読みます。読めない byte があれば、その位置を表示して停止します。知らない名前の場合や、BOM が設定と合わない場合も停止します。
+- 読んだ文字列に NUL 文字が入っている場合 (BOM のない UTF-16 など) も停止します。
+- 停止するときは、key を送らず、clipboard にも触りません。`--dry-run` でも同じように判定し、最初の行に読んだファイルと文字コードを表示します。
 
 ## 入力先の確認と停止
 

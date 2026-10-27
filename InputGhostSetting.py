@@ -6,6 +6,9 @@
 
 # テキストファイルの名前。
 TEXT_FILE_NAME = 'inputGhost.txt'
+# テキストファイルの文字コード。'auto' なら BOM・ASCII・UTF-8 と cp932 のどちらで読めるかで決めるよ。
+# UTF-8 と cp932 のどっちでも読めちゃうときは止まるので、'utf-8' か 'cp932' を書いてね。
+TEXT_ENCODING = 'auto'
 # 一行何文字で区切る?
 NUM_CHARA_IN_ROW = 18
 # 対象アプリケーション。READY_TIME = False のとき shell を通さずに起動するよ。
