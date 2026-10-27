@@ -20,7 +20,10 @@ It automatically pastes text lines to other application. Only available for Wind
 
 ## 入力先の確認と停止
 
-- 通常実行では、カウントダウン後 (`READY_TIME = False` ならアプリ起動の 1 秒後) に前面にある window を入力先として記録します。前面が InputGhost を起動した window のまま、または前面に window がない場合は、何も送らずに停止します。
+- 通常実行では、カウントダウン後に前面にある window を入力先として記録します。前面が InputGhost を起動した window のまま、または前面に window がない場合は、何も送らずに停止します。
+- `READY_TIME = False` のときは、カウントダウンの代わりに `TARGET_APPLICATION` を shell を通さずに起動し、最大 `LAUNCH_TIMEOUT` 秒 (既定 10 秒) 待って、起動したアプリの window が前面に来たらそれを入力先にします。入力先にするのは、起動した process の window か、起動後に始まった同じ名前の実行ファイルの window (Windows 11 の Notepad のように別の process に引き継ぐアプリのため) だけです。前から動いている同じアプリの window や、別のアプリの window は使いません。
+- 起動できない場合や、時間内に起動したアプリの window が前面に来ない場合は、key を送らず、clipboard にも触らずに停止します。起動したアプリは閉じずに残ります。すでに開いている同じアプリに引き継がれて新しい window ができない場合 (Windows 11 の Notepad のタブなど) も停止するので、そのときは `READY_TIME` に秒数を書いてカウントダウンを使ってください。
+- `TARGET_APPLICATION` は、実行ファイルと引数の tuple (例: `('notepad.exe', 'memo.txt')`) か、Windows のコマンドラインの書き方の文字列 (例: `'"C:\\Program Files\\App\\app.exe" memo.txt'`) で書きます。shell を通さないので、`.bat` や文書ファイルを直接指定したり、`&` などの shell の記号を使ったりはできません。
 - 各操作の key を送る直前に、前面の window が入力先のままか確認します。変わっていたら次の key を送らずに `GreenException` で停止し、何番目の操作で止まったかを表示します。それまでに送った入力は入力先に残ります。
 - 止めたいときは、別の window をクリックするか Alt+Tab してください (Win+L でも止まります)。入力先のアプリが dialog を開いた場合も停止します。
 - 制限: 1 つの操作 (Ctrl+V など) の key の途中では確認しないため、押しっぱなしの key は残りません。管理者権限で動くアプリには、Windows の UIPI の制限で入力が届かないことがあり、これは検出できません。
@@ -53,5 +56,5 @@ py -m venv .venv
 
 - Linter: ruff (`pyproject.toml` に rule を書いています)
 - Tests: pytest (`tests/`)。Windows 入力を fake に置き換えるため、実際の key は送りません。
-- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「複数行の入力 (貼り付けを 0.2 秒遅らせる入力先でも行がずれないこと)」「前面が変わったら次の操作の前で停止」「終了後・停止後に元の clipboard の文字列が戻ること」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
+- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「複数行の入力 (貼り付けを 0.2 秒遅らせる入力先でも行がずれないこと)」「前面が変わったら次の操作の前で停止」「終了後・停止後に元の clipboard の文字列が戻ること」「`READY_TIME = False` で起動した入力先 (別の process に引き継ぐものも) を待って使い、前からある別の window には打たないこと」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
 - CI (`.github/workflows/ci.yml`) は `windows-latest` 上で lint・test・`--dry-run` smoke check・E2E を実行します。deploy は行いません。

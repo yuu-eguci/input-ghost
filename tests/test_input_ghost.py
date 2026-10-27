@@ -4,6 +4,7 @@ Windows の入力(SendInput)・前面 window・クリップボード・アプリ
 本物のキー入力は絶対に送らない。'''
 
 import ctypes
+import shlex
 
 import pytest
 
@@ -15,6 +16,8 @@ CF_UNICODETEXT = 13
 CONSOLE, TARGET, OTHER = 100, 200, 300
 # 実行前にユーザーが clipboard に入れていた (ことにする) 合成テキスト。
 USER_CLIPBOARD = 'ユーザーの clipboard'
+# 起動 mode で起動した (ことにする) process の PID と、起動した時刻 (FILETIME)。
+LAUNCHED_PID, LAUNCH_TIME = 4242, 1000
 
 
 class FakeUser32:
@@ -36,11 +39,18 @@ class FakeUser32:
         self.foregrounds = [CONSOLE, TARGET]
         self.clipboardText = USER_CLIPBOARD
         self.otherFormats = 0
+        # window の持ち主の PID と、PID ごとの (実行ファイル名, 始まった時刻)。
+        self.windowPids = {CONSOLE: 1, TARGET: LAUNCHED_PID, OTHER: 999}
+        self.processes = {}
 
     def GetForegroundWindow(self):
         if len(self.foregrounds) > 1:
             return self.foregrounds.pop(0)
         return self.foregrounds[0]
+
+    def GetWindowThreadProcessId(self, window, pid):
+        pid._obj.value = self.windowPids.get(window, 0)
+        return 1
 
     def SendInput(self, count, inputs, size):
         assert size == ctypes.sizeof(ig.INPUT)
@@ -373,12 +383,137 @@ def test_stale_clipboard_stops_before_paste(ghost, monkeypatch):
     assert 2 <= ig.time.now < 2.2
 
 
+class FakeLauncher:
+    '''subprocess.Popen の代わり。起動したコマンドを記録して、偽の process を返す。'''
+
+    def __init__(self):
+        self.calls = []
+        self.error = None
+
+    def __call__(self, command, **kwargs):
+        self.calls.append((command, kwargs))
+        if self.error:
+            raise self.error
+        return type('process', (), {'pid': LAUNCHED_PID})()
+
+
+@pytest.fixture
+def launch(ghost, monkeypatch):
+    '''READY_TIME = False の起動 mode。Windows だけの道具も偽物にする。'''
+
+    monkeypatch.setattr(ig.InputGhost, '_READY_TIME', False)
+    monkeypatch.setattr(
+        ig.InputGhost, '_TARGET_APPLICATION', ('notepad.exe', 'memo.txt'))
+    monkeypatch.setattr(ig.InputGhost, '_LAUNCH_TIMEOUT', 10)
+    launcher = FakeLauncher()
+    monkeypatch.setattr(ig.subprocess, 'Popen', launcher)
+    monkeypatch.setattr(
+        ig.InputGhost, 'currentFileTime', lambda: LAUNCH_TIME)
+    monkeypatch.setattr(
+        ig.InputGhost, 'processDetails', ghost.processes.get)
+    monkeypatch.setattr(ig.InputGhost, 'splitCommandLine', split_like_windows)
+    return launcher
+
+
+def split_like_windows(commandLine):
+    # CommandLineToArgvW は空の文字列を渡すと、動いている実行ファイル自身のパスを返す。
+    return shlex.split(commandLine) or ['C:/Python/python.exe']
+
+
+def test_launch_uses_an_argument_list_and_no_fixed_sleep(ghost, launch):
+    ig.InputGhost.run()
+
+    command, options = launch.calls[0]
+    assert command == ['notepad.exe', 'memo.txt']
+    assert 'shell' not in options
+    # 起動した window がすぐ前面に来たら、決め打ちの 1 秒は待たない。
+    assert ghost.pasteTimes[0] == 0
+    assert ghost.events.count((86, 0)) == 3
+
+
+def test_string_setting_is_split_into_an_argument_list(ghost, launch, monkeypatch):
+    monkeypatch.setattr(
+        ig.InputGhost, '_TARGET_APPLICATION', '"C:/My Apps/app.exe" memo.txt')
+
+    ig.InputGhost.run()
+
+    assert launch.calls[0][0] == ['C:/My Apps/app.exe', 'memo.txt']
+
+
+@pytest.mark.parametrize('setting', ['', '   ', ()])
+def test_empty_target_application_is_refused_before_launch(
+        ghost, launch, monkeypatch, setting):
+    monkeypatch.setattr(ig.InputGhost, '_TARGET_APPLICATION', setting)
+
+    with pytest.raises(ig.GreenException, match='empty.*Nothing was sent'):
+        ig.InputGhost.run()
+
+    assert launch.calls == []
+    assert ghost.events == []
+
+
+def test_launch_failure_sends_nothing(ghost, launch):
+    launch.error = FileNotFoundError('no such program')
+
+    with pytest.raises(ig.GreenException, match='Could not start.*Nothing was sent') as caught:
+        ig.InputGhost.run()
+
+    assert isinstance(caught.value.__cause__, FileNotFoundError)
+    assert ghost.events == []
+    assert ghost.copies == []
+
+
+def test_launched_window_that_comes_late_is_waited_for(ghost, launch):
+    ghost.foregrounds = [CONSOLE]
+
+    def show_target_after_two_and_a_half_seconds():
+        if ig.time.now >= 2.5:
+            ghost.foregrounds = [TARGET]
+
+    ig.time.onSleep = show_target_after_two_and_a_half_seconds
+
+    ig.InputGhost.run()
+
+    assert 2.5 <= ghost.pasteTimes[0] < 2.7
+    assert ghost.events.count((86, 0)) == 3
+
+
+def test_window_handed_off_to_a_new_process_of_the_same_program_is_used(
+        ghost, launch):
+    # Windows 11 の Notepad のように、起動後に始まった別の process が window を出す。
+    ghost.windowPids[TARGET] = 7777
+    ghost.processes[7777] = ('notepad.exe', LAUNCH_TIME + 1)
+
+    ig.InputGhost.run()
+
+    assert ghost.events.count((86, 0)) == 3
+
+
+@pytest.mark.parametrize('owner', [
+    ('notepad.exe', LAUNCH_TIME - 1),   # 起動前から動いている同じアプリ
+    ('explorer.exe', LAUNCH_TIME + 1),  # 別のアプリ
+    None,                               # 何の process か分からない
+])
+def test_window_not_from_the_launch_is_never_used(ghost, launch, owner):
+    ghost.windowPids[TARGET] = 7777
+    if owner:
+        ghost.processes[7777] = owner
+
+    with pytest.raises(
+            ig.GreenException,
+            match="'notepad.exe' did not come to the front within 10s.*Nothing was sent"):
+        ig.InputGhost.run()
+
+    assert ghost.events == []
+    assert ghost.copies == []
+    assert 10 <= ig.time.now < 10.2
+
+
 @pytest.mark.parametrize('foregrounds', [[CONSOLE], [CONSOLE, 0]])
 @pytest.mark.parametrize('ready_time', [1, False])
 def test_no_new_target_window_sends_nothing(
-        ghost, monkeypatch, ready_time, foregrounds):
+        ghost, launch, monkeypatch, ready_time, foregrounds):
     monkeypatch.setattr(ig.InputGhost, '_READY_TIME', ready_time)
-    monkeypatch.setattr(ig.subprocess, 'Popen', lambda *args, **kwargs: None)
     ghost.foregrounds = foregrounds
 
     with pytest.raises(ig.GreenException, match='Nothing was sent'):

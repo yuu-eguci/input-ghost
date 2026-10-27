@@ -4,12 +4,16 @@ GitHub-hosted の Windows runner 上で INPUTGHOST_E2E=1 のときだけ動く�
 入力先は repo 内の使い捨て window (e2e_target.py) だけ。それ以外の環境では skip する。'''
 
 import os
+import subprocess
 import sys
+import time
 
 import pyperclip
 import pytest
 
-from e2e_support import Target, e2e_enabled, startInputGhost, wait_until
+from e2e_support import (
+    LAUNCHER_SCRIPT, PYTHONW, SLEEPER_SCRIPT, Target, e2e_enabled, killPid,
+    startInputGhost, wait_until)
 
 HOSTED = {
     'INPUTGHOST_E2E': '1',
@@ -58,10 +62,10 @@ def desktop(tmp_path):
     textFile = tmp_path / 'rows.txt'
     processes = []
 
-    def start(rows, keyOrder, waitTime):
+    def start(rows, keyOrder, waitTime, launch=None):
         textFile.write_text('\n'.join(rows) + '\n', encoding='cp932')
         pyperclip.copy(ORIGINAL_CLIPBOARD)
-        processes.append(startInputGhost(textFile, keyOrder, waitTime))
+        processes.append(startInputGhost(textFile, keyOrder, waitTime, launch))
         return processes[-1]
 
     with Target(tmp_path, 'decoy') as decoy, \
@@ -118,5 +122,86 @@ def test_real_focus_change_stops_before_next_paste(desktop):
     assert 'Foreground window changed' in err
     assert 'before action 2/4' in err
     assert target.text() == '\n'
+    assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
+
+
+@needs_hosted_windows
+def test_real_launched_target_is_waited_for_and_used(desktop, tmp_path):
+    start, decoy, target = desktop
+    launched = Target(tmp_path, 'launched', launch=False)
+    # 文字列のコマンドラインは、古い版 (shell の call) でも新しい版でも同じように使える。
+    process = start(ROWS[:2], ['copypaste', 'return'], 0.5, (launched.commandLine(), 10))
+
+    try:
+        with launched:
+            # 前の固定 1 秒より遅れて前面にする (自分で前面に来ていてもかまわない)。
+            time.sleep(1.5)
+            if not launched.bringToFront():
+                process.kill()
+                pytest.fail('Could not bring the launched target to front; InputGhost was killed.')
+            out, err = process.communicate(timeout=60)
+            assert process.returncode == 0, err
+            assert launched.text() == '# ghost e2e 1\n# ghost e2e 2\n'
+    except RuntimeError as error:
+        process.kill()
+        pytest.fail(f'{error} InputGhost was killed.')
+
+    assert target.text() == ''
+    assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
+
+
+@needs_hosted_windows
+def test_real_window_handed_off_to_a_new_process_is_used(desktop, tmp_path):
+    start, decoy, target = desktop
+    handed = Target(tmp_path, 'handed', launch=False)
+    # launcher が入力先を別の process で起動してすぐ終わる。window の持ち主は起動した
+    # process ではないので、「起動後に始まった同じ実行ファイル」として見つかるはず。
+    command = subprocess.list2cmdline(
+        [str(PYTHONW), str(LAUNCHER_SCRIPT), *handed.command()[1:]])
+    process = start(ROWS[:2], ['copypaste', 'return'], 0.5, (command, 10))
+
+    try:
+        with handed:
+            if not handed.bringToFront():
+                process.kill()
+                pytest.fail('Could not bring the handed-off target to front; InputGhost was killed.')
+            out, err = process.communicate(timeout=60)
+            assert process.returncode == 0, err
+            assert handed.text() == '# ghost e2e 1\n# ghost e2e 2\n'
+    except RuntimeError as error:
+        process.kill()
+        pytest.fail(f'{error} InputGhost was killed.')
+
+    assert target.text() == ''
+    assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
+
+
+@needs_hosted_windows
+def test_real_launch_does_not_type_into_an_older_window(desktop, tmp_path):
+    start, decoy, target = desktop
+    pidFile = tmp_path / 'sleeper.pid'
+    # window を作らない process を起動させる。前面には、起動前からある同じ pythonw の window を出す。
+    command = subprocess.list2cmdline([str(PYTHONW), str(SLEEPER_SCRIPT), str(pidFile)])
+    process = start(ROWS[:1], ['copypaste', 'return'], 0.5, (command, 3))
+
+    try:
+        if not wait_until(pidFile.exists, 20):
+            process.kill()
+            pytest.fail('The launched process never started; InputGhost was killed.')
+        if not target.bringToFront():
+            process.kill()
+            pytest.fail('Could not bring the older window to front; InputGhost was killed.')
+        out, err = process.communicate(timeout=60)
+    finally:
+        if pidFile.exists():
+            killPid(int(pidFile.read_text()))
+
+    assert process.returncode != 0, err
+    assert 'did not come to the front' in err
+    assert 'Nothing was sent' in err
+    assert target.text() == ''
     assert decoy.text() == ''
     assert pyperclip.paste() == ORIGINAL_CLIPBOARD

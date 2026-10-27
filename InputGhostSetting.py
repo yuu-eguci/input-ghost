@@ -8,7 +8,9 @@
 TEXT_FILE_NAME = 'inputGhost.txt'
 # 一行何文字で区切る?
 NUM_CHARA_IN_ROW = 18
-# 対象アプリケーションの名前。もしパス通ってなかったら絶対パスを書いてね。ダブルクォーテ書いたほうがいいかも。
+# 対象アプリケーション。READY_TIME = False のとき shell を通さずに起動するよ。
+# ('notepad.exe', 'memo.txt') みたいな tuple か、Windows のコマンドラインの文字列で書いてね。
+# パス通ってなかったら絶対パス、空白があるならダブルクォーテで囲んでね。
 TARGET_APPLICATION = 'notepad.exe'
 # 行動の順番。
 KEY_ORDER = ('0', 'return', 'copypaste', 'return')
@@ -18,5 +20,7 @@ WAIT_TIME = 1
 CLIPBOARD_TIMEOUT = 5
 # Ctrl+V のあと、次の行をクリップボードに入れるまで空ける秒数。遅いアプリが前の行を読む前に変わらないように。
 PASTE_SETTLE_TIME = 0.5
-# 実行後の待機秒数。使わないならFalseにしてね。
+# 実行後の待機秒数。使わないならFalseにしてね (そのときは TARGET_APPLICATION を起動するよ)。
 READY_TIME = 5
+# 起動したアプリの window が前面に来るのを待つ最大秒数。来なかったら何も送らずに止まるよ。
+LAUNCH_TIMEOUT = 10
