@@ -36,10 +36,15 @@ windows専用。
     READY_TIME = False のとき、shell を通さずに起動して、起動したアプリの window が
     前面に来るまで LAUNCH_TIMEOUT 秒まで待つようにした (前は決め打ちで 1 秒)。
     前からある別の window は使わない。
+バージョン1.11
+    テキストファイルを cp932 決め打ちで読むのをやめた。BOM・ASCII・UTF-8 と cp932 の
+    どちらで読めるかで決めて、どっちでも読めて中身が変わるときは決めつけずに止まる。
+    TEXT_ENCODING で文字コードを指定できる。
 '''
 
 
 import argparse
+import codecs
 import ctypes
 import ntpath
 import subprocess
@@ -81,6 +86,12 @@ class InputGhost:
 
     # テキストファイルの名前。
     _TEXT_FILE_NAME = InputGhostSetting.TEXT_FILE_NAME
+    # テキストファイルの文字コード。'auto' か文字コードの名前。
+    _TEXT_ENCODING = InputGhostSetting.TEXT_ENCODING
+    # BOM と、そのとき使う文字コード・表示する名前。
+    _BOMS = ((codecs.BOM_UTF8, 'utf-8-sig', 'utf-8 (BOM)'),
+             (codecs.BOM_UTF16_LE, 'utf-16', 'utf-16 (BOM)'),
+             (codecs.BOM_UTF16_BE, 'utf-16', 'utf-16 (BOM)'))
     # 一行何文字で区切る?
     _NUM_CHARA_IN_ROW = InputGhostSetting.NUM_CHARA_IN_ROW
     # 対象アプリケーションの名前。
@@ -123,9 +134,11 @@ class InputGhost:
         begin_set.exec_all(__file__)
 
         # 入力する文字列を用意して、入力前に操作の一覧を作ります。
-        actions = cls.buildActions(cls.getInputTextList())
+        text, encoding = cls.readInputText()
+        actions = cls.buildActions(cls.splitRows(text))
 
         if dryRun:
+            print(f'text file: {cls._TEXT_FILE_NAME} ({encoding})')
             for key, row in actions:
                 print(f'paste {row}' if key == 'copypaste' else f'key {key}')
             print('dry-run: no input was sent.')
@@ -402,12 +415,96 @@ class InputGhost:
             kernel32.CloseHandle(handle)
 
     @classmethod
-    def getInputTextList(cls):
-        '''テキストファイルを読み込んで加工します。'''
+    def readInputText(cls):
+        '''テキストファイルを読んで (文字列, 使った文字コード) を返します。
+        文字コードを決められなければ、何も送らずに止めます。'''
 
-        # ファイル読み込みます。
-        with open(cls._TEXT_FILE_NAME, 'r', encoding='cp932') as f:
-            rowList = f.readlines()
+        with open(cls._TEXT_FILE_NAME, 'rb') as f:
+            data = f.read()
+        text, encoding = cls.decodeInputText(data)
+        if '\x00' in text:
+            raise GreenException(
+                f'{cls._TEXT_FILE_NAME} contains NUL characters (maybe UTF-16 '
+                'without a BOM). Nothing was sent; save it as UTF-8 or cp932.')
+        return text, encoding
+
+    @classmethod
+    def decodeInputText(cls, data):
+        '''README の「入力ファイルの文字コード」の順に文字コードを決めて読みます。'''
+
+        name = cls._TEXT_FILE_NAME
+        bom = next(((codec, label) for mark, codec, label in cls._BOMS
+                    if data.startswith(mark)), None)
+
+        if cls._TEXT_ENCODING != 'auto':
+            try:
+                codec = codecs.lookup(cls._TEXT_ENCODING).name
+            except LookupError:
+                raise GreenException(
+                    f'Unknown TEXT_ENCODING {cls._TEXT_ENCODING!r}. '
+                    'Nothing was sent.') from None
+            # UTF-8 なら BOM を外します (見えない文字を打たないように)。
+            if codec == 'utf-8':
+                codec = 'utf-8-sig'
+            if bom and bom[0] != codec:
+                raise GreenException(
+                    f'{name} starts with a {bom[1].split()[0].upper()} BOM, but '
+                    f'TEXT_ENCODING is {cls._TEXT_ENCODING!r}. Nothing was sent.')
+            return cls.decodeStrictly(
+                data, codec, f'{cls._TEXT_ENCODING} (TEXT_ENCODING)')
+
+        if bom:
+            return cls.decodeStrictly(data, *bom)
+        if data.isascii():
+            return data.decode('ascii'), 'ascii'
+
+        decoded, errors = {}, {}
+        for codec in ('utf-8', 'cp932'):
+            try:
+                decoded[codec] = data.decode(codec)
+            except UnicodeDecodeError as error:
+                errors[codec] = error
+        if not decoded:
+            raise GreenException(
+                f'Could not read {name} as UTF-8 ({cls.describe(errors["utf-8"])}) '
+                f'or cp932 ({cls.describe(errors["cp932"])}). Nothing was sent; '
+                'save it as UTF-8 or cp932, or set TEXT_ENCODING.')
+        if len(decoded) == 2 and decoded['utf-8'] != decoded['cp932']:
+            # 0x0A はどちらでも改行で、2 byte 文字の途中には出てこないので、行がずれない。
+            utf8, cp932 = next(
+                (u, c) for u, c in zip(decoded['utf-8'].split('\n'),
+                                        decoded['cp932'].split('\n')) if u != c)
+            raise GreenException(
+                f'{name} can be read both as UTF-8 and as cp932, and they differ '
+                f'(UTF-8 {utf8[:20]!r}, cp932 {cp932[:20]!r}). Nothing was sent; '
+                "set TEXT_ENCODING to 'utf-8' or 'cp932'.")
+        codec = next(iter(decoded))
+        return decoded[codec], codec
+
+    @classmethod
+    def decodeStrictly(cls, data, codec, label):
+        try:
+            return data.decode(codec), label
+        except LookupError:
+            # base64 などは codec ではあっても文字コードではありません。
+            raise GreenException(
+                f'Unknown TEXT_ENCODING {cls._TEXT_ENCODING!r} (not a text '
+                'encoding). Nothing was sent.') from None
+        except UnicodeDecodeError as error:
+            raise GreenException(
+                f'Could not read {cls._TEXT_FILE_NAME} as {label}: '
+                f'{cls.describe(error)}. Nothing was sent.') from error
+
+    @staticmethod
+    def describe(error):
+        return f'byte {error.object[error.start]:#04x} at position {error.start}'
+
+    @classmethod
+    def splitRows(cls, text):
+        '''文字列を行に分けて、NUM_CHARA_IN_ROW 文字ずつに区切ります。'''
+
+        # 改行は、前の universal newlines と同じく \r\n・\r・\n を区切りにします。
+        rowList = text.replace('\r\n', '\n').replace('\r', '\n').split('\n')
 
         # 加工してリストにします。
         ret = []
