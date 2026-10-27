@@ -6,6 +6,7 @@ GitHub-hosted の Windows runner 上で INPUTGHOST_E2E=1 のときだけ動く�
 import os
 import sys
 
+import pyperclip
 import pytest
 
 from e2e_support import Target, e2e_enabled, startInputGhost, wait_until
@@ -46,6 +47,8 @@ ROWS = ['# ghost e2e 1', '# ghost e2e 2', '# ghost e2e 3']
 # Ctrl+V 直後に次の行をコピーすると、前の行の代わりに次の行が貼られてしまう。
 # 既定の PASTE_SETTLE_TIME (0.5 秒) なら、runner 自体の遅れを足しても間に合う。
 PASTE_DELAY_MS = 200
+# 実行前に runner の clipboard に入れておく合成テキスト。終わったら戻っているはず。
+ORIGINAL_CLIPBOARD = '# e2e original clipboard'
 
 
 @pytest.fixture
@@ -57,6 +60,7 @@ def desktop(tmp_path):
 
     def start(rows, keyOrder, waitTime):
         textFile.write_text('\n'.join(rows) + '\n', encoding='cp932')
+        pyperclip.copy(ORIGINAL_CLIPBOARD)
         processes.append(startInputGhost(textFile, keyOrder, waitTime))
         return processes[-1]
 
@@ -88,8 +92,10 @@ def test_real_rows_reach_only_the_chosen_slow_target_in_order(desktop):
     out, err = process.communicate(timeout=60)
 
     assert process.returncode == 0, err
+    # 最後の行も遅れて読まれるので、clipboard を戻すのが早すぎると元の文字列が貼られる。
     assert target.text() == ''.join(row + '\n' for row in ROWS)
     assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
 
 
 @needs_hosted_windows
@@ -113,3 +119,4 @@ def test_real_focus_change_stops_before_next_paste(desktop):
     assert 'before action 2/4' in err
     assert target.text() == '\n'
     assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
