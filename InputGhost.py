@@ -439,8 +439,6 @@ class InputGhost:
         if cls._TEXT_ENCODING != 'auto':
             try:
                 codec = codecs.lookup(cls._TEXT_ENCODING).name
-                # base64 などは codec ではあっても文字コードではありません。
-                b''.decode(codec)
             except LookupError:
                 raise GreenException(
                     f'Unknown TEXT_ENCODING {cls._TEXT_ENCODING!r}. '
@@ -487,6 +485,11 @@ class InputGhost:
     def decodeStrictly(cls, data, codec, label):
         try:
             return data.decode(codec), label
+        except LookupError:
+            # base64 などは codec ではあっても文字コードではありません。
+            raise GreenException(
+                f'Unknown TEXT_ENCODING {cls._TEXT_ENCODING!r} (not a text '
+                'encoding). Nothing was sent.') from None
         except UnicodeDecodeError as error:
             raise GreenException(
                 f'Could not read {cls._TEXT_FILE_NAME} as {label}: '
