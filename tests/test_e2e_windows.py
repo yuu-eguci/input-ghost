@@ -12,8 +12,9 @@ import pyperclip
 import pytest
 
 from e2e_support import (
-    LAUNCHER_SCRIPT, PYTHONW, SLEEPER_SCRIPT, Target, e2e_enabled, killPid,
-    startInputGhost, wait_until)
+    LAUNCHER_SCRIPT, PYTHONW, SLEEPER_SCRIPT, Target, clipboardSequence,
+    e2e_enabled, killPid, putNonTextClipboard, readClipboard, startInputGhost,
+    wait_until)
 
 HOSTED = {
     'INPUTGHOST_E2E': '1',
@@ -53,6 +54,8 @@ ROWS = ['# ghost e2e 1', '# ghost e2e 2', '# ghost e2e 3']
 PASTE_DELAY_MS = 200
 # 実行前に runner の clipboard に入れておく合成テキスト。終わったら戻っているはず。
 ORIGINAL_CLIPBOARD = '# e2e original clipboard'
+# 文字列ではない独自の形式に入れる合成の byte。
+NON_TEXT_PAYLOAD = b'InputGhost E2E synthetic non-text payload \x00\x01\x02\xfe\xff'
 
 
 @pytest.fixture
@@ -62,9 +65,10 @@ def desktop(tmp_path):
     textFile = tmp_path / 'rows.txt'
     processes = []
 
-    def start(rows, keyOrder, waitTime, launch=None):
+    def start(rows, keyOrder, waitTime, launch=None, clipboardText=ORIGINAL_CLIPBOARD):
         textFile.write_text('\n'.join(rows) + '\n', encoding='cp932')
-        pyperclip.copy(ORIGINAL_CLIPBOARD)
+        if clipboardText is not None:
+            pyperclip.copy(clipboardText)
         processes.append(startInputGhost(textFile, keyOrder, waitTime, launch))
         return processes[-1]
 
@@ -205,3 +209,32 @@ def test_real_launch_does_not_type_into_an_older_window(desktop, tmp_path):
     assert target.text() == ''
     assert decoy.text() == ''
     assert pyperclip.paste() == ORIGINAL_CLIPBOARD
+
+
+@needs_hosted_windows
+def test_real_non_text_clipboard_is_refused_and_left_untouched(desktop):
+    start, decoy, target = desktop
+    # 画像やファイルの代わりに、文字列のない独自の形式 1 つだけを clipboard に置く。
+    clipboardFormat = putNonTextClipboard(NON_TEXT_PAYLOAD)
+    sequence = clipboardSequence()
+    process = start(ROWS[:1], ['copypaste', 'return'], 0.5, clipboardText=None)
+    switchDuringCountdown(process, target)
+
+    out, err = process.communicate(timeout=60)
+
+    assert process.returncode != 0, err
+    assert 'non-text' in err
+    assert 'Nothing was sent' in err
+    assert target.text() == ''
+    assert decoy.text() == ''
+    # 形式もその中身も残っていて、clipboard は一度も書き換えられていない。
+    # (GlobalSize は確保した大きさなので、頼んだ大きさより長いことがある)
+    formats, data = readClipboard(clipboardFormat)
+    assert formats == [clipboardFormat]
+    assert data[:len(NON_TEXT_PAYLOAD)] == NON_TEXT_PAYLOAD
+    assert clipboardSequence() == sequence
+
+    # 対照: 本当に書き換えれば、同じ確かめ方で分かる。
+    pyperclip.copy(ORIGINAL_CLIPBOARD)
+    assert readClipboard(clipboardFormat)[0] != [clipboardFormat]
+    assert clipboardSequence() != sequence
