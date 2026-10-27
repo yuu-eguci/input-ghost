@@ -40,12 +40,16 @@ windows専用。
     テキストファイルを cp932 決め打ちで読むのをやめた。BOM・ASCII・UTF-8 と cp932 の
     どちらで読めるかで決めて、どっちでも読めて中身が変わるときは決めつけずに止まる。
     TEXT_ENCODING で文字コードを指定できる。
+バージョン1.12
+    数の設定 (NUM_CHARA_IN_ROW・READY_TIME・WAIT_TIME など) を最初に確かめて、
+    おかしければ何も送らずに止まるようにした (前は最初の key を送ったあとで落ちることがあった)。
 '''
 
 
 import argparse
 import codecs
 import ctypes
+import math
 import ntpath
 import subprocess
 import sys
@@ -133,6 +137,9 @@ class InputGhost:
         # いつもの前準備。
         begin_set.exec_all(__file__)
 
+        # 数の設定を、テキストファイルを読む前に確かめます。
+        cls.validateSettings()
+
         # 入力する文字列を用意して、入力前に操作の一覧を作ります。
         text, encoding = cls.readInputText()
         actions = cls.buildActions(cls.splitRows(text))
@@ -167,6 +174,35 @@ class InputGhost:
 
         # 操作の一覧をぐるぐるしながら自動入力します。
         cls.inputAutomatically(actions, targetWindow)
+
+    @classmethod
+    def validateSettings(cls):
+        '''数の設定を確かめます。README の「設定の値」と違えば、何も送らずに止めます。'''
+
+        # True・False は int の仲間なので、そのままだと 1・0 として通ってしまいます。
+        def isInteger(value):
+            return isinstance(value, int) and not isinstance(value, bool)
+
+        def isSeconds(value):
+            return ((isInteger(value) or isinstance(value, float))
+                    and math.isfinite(value) and value >= 0)
+
+        seconds = 'a number of seconds of 0 or more'
+        rules = (
+            ('NUM_CHARA_IN_ROW', cls._NUM_CHARA_IN_ROW, 'an integer of 1 or more',
+             lambda value: isInteger(value) and value >= 1),
+            ('READY_TIME', cls._READY_TIME, 'False or an integer of 0 or more',
+             lambda value: value is False or (isInteger(value) and value >= 0)),
+            ('WAIT_TIME', cls._WAIT_TIME, seconds, isSeconds),
+            ('PASTE_SETTLE_TIME', cls._PASTE_SETTLE_TIME, seconds, isSeconds),
+            ('CLIPBOARD_TIMEOUT', cls._CLIPBOARD_TIMEOUT, seconds, isSeconds),
+            ('LAUNCH_TIMEOUT', cls._LAUNCH_TIMEOUT, seconds, isSeconds),
+        )
+        for name, value, expected, isValid in rules:
+            if not isValid(value):
+                raise GreenException(
+                    f'{name} must be {expected}, but it is {value!r}. '
+                    'Nothing was sent.')
 
     @classmethod
     def buildActions(cls, inputTextList):
