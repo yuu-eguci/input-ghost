@@ -1,7 +1,9 @@
 '''InputGhost のテスト。
 
-Windows の入力(keybd_event)・前面 window・クリップボード・アプリ起動はすべて偽物に差し替える。
+Windows の入力(SendInput)・前面 window・クリップボード・アプリ起動はすべて偽物に差し替える。
 本物のキー入力は絶対に送らない。'''
+
+import ctypes
 
 import pytest
 
@@ -16,15 +18,19 @@ USER_CLIPBOARD = 'ユーザーの clipboard'
 
 
 class FakeUser32:
-    '''keybd_event を記録し、前面の window と clipboard を偽装する偽 user32。
+    '''SendInput を記録し、前面の window と clipboard を偽装する偽 user32。
 
     foregrounds の先頭から順に返し、最後の 1 つは返し続ける。
     既定は「起動時は console、カウントダウン後は入力先」。
+    SendInput は 1 回ごとの key を batches に、受け付けた key を events に残す。
+    accept(key の一覧) が受け付ける数を決める (既定は全部)。
     clipboard は文字列 (clipboardText) と、文字列以外の形式の数 (otherFormats)。'''
 
     def __init__(self, clock):
         self.clock = clock
+        self.batches = []
         self.events = []
+        self.accept = len
         self.pasteTimes = []
         self.copies = []
         self.foregrounds = [CONSOLE, TARGET]
@@ -36,10 +42,17 @@ class FakeUser32:
             return self.foregrounds.pop(0)
         return self.foregrounds[0]
 
-    def keybd_event(self, keycode, scan, flags, extra):
-        self.events.append((keycode, flags))
-        if (keycode, flags) == (86, 0):
-            self.pasteTimes.append(self.clock.now)
+    def SendInput(self, count, inputs, size):
+        assert size == ctypes.sizeof(ig.INPUT)
+        assert all(inputs[i].type == ig.INPUT_KEYBOARD for i in range(count))
+        keys = [(inputs[i].u.ki.wVk, inputs[i].u.ki.dwFlags) for i in range(count)]
+        self.batches.append(keys)
+        accepted = min(count, self.accept(keys))
+        for key in keys[:accepted]:
+            self.events.append(key)
+            if key == (86, 0):
+                self.pasteTimes.append(self.clock.now)
+        return accepted
 
     def CountClipboardFormats(self):
         return bool(self.clipboardText) + self.otherFormats
@@ -125,6 +138,71 @@ def test_real_run_sends_key_order_for_each_chunk(ghost):
     assert ghost.events == one_row * 3
 
 
+def test_each_action_is_one_send_input_batch(ghost):
+    ig.InputGhost.run()
+
+    one_row = [
+        [(48, 0), (48, KEYUP)],
+        [(13, 0), (13, KEYUP)],
+        [(17, 0), (86, 0), (17, KEYUP), (86, KEYUP)],
+        [(13, 0), (13, KEYUP)],
+    ]
+    assert ghost.batches == one_row * 3
+
+
+def test_input_struct_matches_win32_layout():
+    # union に MOUSEINPUT (いちばん大きい) を入れないと、SendInput が全部断る大きさになる。
+    pointer = ctypes.sizeof(ctypes.c_void_p)
+    assert ctypes.sizeof(ig.INPUT) == {8: 40, 4: 28}[pointer]
+    assert ctypes.sizeof(ig.KEYBDINPUT) == {8: 24, 4: 16}[pointer]
+
+
+def accept_for_paste(count):
+    # Ctrl+V の 4 つのときだけ count 個まで受け付け、ほかは全部受け付ける。
+    return lambda keys: count if (86, 0) in keys else len(keys)
+
+
+def test_rejected_key_batch_stops_and_restores_clipboard(ghost):
+    ghost.accept = accept_for_paste(0)
+
+    with pytest.raises(
+            ig.GreenException,
+            match=r'accepted only 0/4 key events.*action 3/12 \(copypaste\)'
+                  r'.*2 actions already sent.*no key is left pressed'):
+        ig.InputGhost.run()
+
+    # 受け付けられなかった batch のあとは、何も送らない。
+    assert ghost.batches[-1] == [(17, 0), (86, 0), (17, KEYUP), (86, KEYUP)]
+    assert ghost.events == [(48, 0), (48, KEYUP), (13, 0), (13, KEYUP)]
+    assert ghost.clipboardText == USER_CLIPBOARD
+
+
+def test_partly_accepted_batch_releases_pressed_keys(ghost, monkeypatch):
+    monkeypatch.setattr(ig.InputGhost, '_PASTE_SETTLE_TIME', 0.5)
+    ghost.accept = accept_for_paste(2)
+
+    with pytest.raises(
+            ig.GreenException,
+            match='accepted only 2/4 key events.*no key is left pressed'):
+        ig.InputGhost.run()
+
+    # Ctrl と V が押されたままにならないよう、離す分だけを送る。
+    assert ghost.batches[-1] == [(17, KEYUP), (86, KEYUP)]
+    assert ghost.events[-4:] == [(17, 0), (86, 0), (17, KEYUP), (86, KEYUP)]
+    # V が押されたので貼られたかもしれない。clipboard は待ってから戻す。
+    assert ghost.clipboardText == USER_CLIPBOARD
+    assert ghost.copies[-1][1] - ghost.pasteTimes[-1] >= 0.5
+
+
+def test_failed_key_release_is_reported(ghost):
+    # Ctrl+V は 2 つまで、そのあと key を離す分は 1 つも受け付けない。
+    release = [(17, KEYUP), (86, KEYUP)]
+    ghost.accept = lambda keys: 2 if (86, 0) in keys else 0 if keys == release else len(keys)
+
+    with pytest.raises(ig.GreenException, match='some keys may still be pressed'):
+        ig.InputGhost.run()
+
+
 def test_clipboard_that_updates_late_is_still_pasted(ghost, monkeypatch):
     synced_paste = ig.pyperclip.paste
     calls = []
@@ -156,14 +234,15 @@ def test_clipboard_changes_only_after_paste_settles(ghost, monkeypatch):
 
 def steal_focus_right_after_first_paste(ghost, monkeypatch):
     # Ctrl+V を送り終えた直後に前面を奪う。次の操作 ('return') の前で止まる。
-    send = ghost.keybd_event
+    send = ghost.SendInput
 
-    def keybd_event(keycode, scan, flags, extra):
-        send(keycode, scan, flags, extra)
-        if (keycode, flags) == (86, KEYUP):
+    def SendInput(count, inputs, size):
+        accepted = send(count, inputs, size)
+        if (86, KEYUP) in ghost.events:
             ghost.foregrounds = [OTHER]
+        return accepted
 
-    monkeypatch.setattr(ghost, 'keybd_event', keybd_event)
+    monkeypatch.setattr(ghost, 'SendInput', SendInput)
     return ig.GreenException, 'before action 4/12'
 
 
