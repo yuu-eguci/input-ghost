@@ -32,11 +32,16 @@ windows専用。
 バージョン1.9
     古い keybd_event をやめて、1 つの操作の key を SendInput でまとめて送るようにした。
     Windows が全部を受け付けなかったら、押したままの key を離して止まる。
+バージョン1.10
+    READY_TIME = False のとき、shell を通さずに起動して、起動したアプリの window が
+    前面に来るまで LAUNCH_TIMEOUT 秒まで待つようにした (前は決め打ちで 1 秒)。
+    前からある別の window は使わない。
 '''
 
 
 import argparse
 import ctypes
+import ntpath
 import subprocess
 import sys
 import time
@@ -91,6 +96,9 @@ class InputGhost:
     _PASTE_SETTLE_TIME = InputGhostSetting.PASTE_SETTLE_TIME
     # 実行後の待機秒数。
     _READY_TIME = InputGhostSetting.READY_TIME
+    # 起動したアプリの window を待つ最大秒数と確認間隔。
+    _LAUNCH_TIMEOUT = InputGhostSetting.LAUNCH_TIMEOUT
+    _LAUNCH_INTERVAL = 0.1
 
     # 各キーコードの設定。
     _KEYCODE_0 = 48
@@ -129,21 +137,20 @@ class InputGhost:
         startWindow = user32.GetForegroundWindow()
 
         if cls._READY_TIME is False:
-            # 対象アプリケーションを引っ張り出します。
-            cls.bringTargetApplication()
-            time.sleep(1)
+            # 対象アプリケーションを起動して、その window が前面に来るのを待ちます。
+            targetWindow = cls.launchTargetApplication(user32, startWindow)
         else:
             for count in range(cls._READY_TIME):
                 time.sleep(1)
                 print(cls._READY_TIME - count)
 
-        # このとき前面にある window を入力先にします。起動元のままなら入力しません。
-        targetWindow = user32.GetForegroundWindow()
-        if targetWindow in (0, startWindow):
-            raise GreenException(
-                'The target window is not in front (focus is still on the '
-                'window that started InputGhost, or on no window). '
-                'Nothing was sent.')
+            # このとき前面にある window を入力先にします。起動元のままなら入力しません。
+            targetWindow = user32.GetForegroundWindow()
+            if targetWindow in (0, startWindow):
+                raise GreenException(
+                    'The target window is not in front (focus is still on the '
+                    'window that started InputGhost, or on no window). '
+                    'Nothing was sent.')
 
         # 操作の一覧をぐるぐるしながら自動入力します。
         cls.inputAutomatically(actions, targetWindow)
@@ -280,10 +287,119 @@ class InputGhost:
             time.sleep(cls._CLIPBOARD_INTERVAL)
 
     @classmethod
-    def bringTargetApplication(cls):
-        '''対象アプリケーションを引っ張り出します。'''
+    def launchTargetApplication(cls, user32, startWindow):
+        '''TARGET_APPLICATION を shell を通さずに起動し、その window が前面に来たら返します。
+        LAUNCH_TIMEOUT 秒たっても来なければ、何も送らずに止めます。'''
 
-        subprocess.Popen('call '+cls._TARGET_APPLICATION, shell=True)
+        command = cls.targetCommand()
+        program = ntpath.basename(command[0]).lower()
+        if not ntpath.splitext(program)[1]:
+            program += '.exe'
+        launchTime = cls.currentFileTime()
+        try:
+            process = subprocess.Popen(command)
+        except OSError as error:
+            raise GreenException(
+                f'Could not start TARGET_APPLICATION {command!r}: {error}. '
+                'Nothing was sent.') from error
+
+        deadline = time.monotonic() + cls._LAUNCH_TIMEOUT
+        while True:
+            window = user32.GetForegroundWindow()
+            if window not in (0, startWindow) and cls.isLaunchedWindow(
+                    user32, window, process.pid, program, launchTime):
+                return window
+            if time.monotonic() >= deadline:
+                raise GreenException(
+                    f'{program!r} did not come to the front within '
+                    f'{cls._LAUNCH_TIMEOUT}s (the front window is not one the '
+                    'launch opened). Nothing was sent.')
+            time.sleep(cls._LAUNCH_INTERVAL)
+
+    @classmethod
+    def targetCommand(cls):
+        '''TARGET_APPLICATION を引数の list にします。空なら止めます。'''
+
+        setting = cls._TARGET_APPLICATION
+        if isinstance(setting, str):
+            # 空の文字列を CommandLineToArgvW に渡すと、自分 (python) のパスが返ってくる。
+            command = cls.splitCommandLine(setting) if setting.strip() else []
+        else:
+            command = list(setting)
+        if not command:
+            raise GreenException('TARGET_APPLICATION is empty. Nothing was sent.')
+        return command
+
+    @classmethod
+    def isLaunchedWindow(cls, user32, window, launchedPid, program, launchTime):
+        '''起動した process の window か、起動後に始まった同じ実行ファイルの window なら True。'''
+
+        owner = ctypes.c_ulong()
+        user32.GetWindowThreadProcessId(window, ctypes.byref(owner))
+        if owner.value == launchedPid:
+            return True
+        # Windows 11 の Notepad のように、別の process に引き継ぐアプリのため。
+        details = cls.processDetails(owner.value)
+        return (details is not None and details[0] == program
+                and details[1] >= launchTime)
+
+    @staticmethod
+    def splitCommandLine(commandLine):
+        '''Windows と同じ規則でコマンドラインを引数の list にします (Windows 専用)。'''
+
+        shell32 = ctypes.WinDLL('shell32')
+        kernel32 = ctypes.WinDLL('kernel32')
+        shell32.CommandLineToArgvW.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        shell32.CommandLineToArgvW.argtypes = [
+            ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+        count = ctypes.c_int()
+        argv = shell32.CommandLineToArgvW(commandLine, ctypes.byref(count))
+        if not argv:
+            raise GreenException(
+                f'Could not read TARGET_APPLICATION {commandLine!r}. Nothing was sent.')
+        try:
+            return [argv[i] for i in range(count.value)]
+        finally:
+            kernel32.LocalFree(argv)
+
+    @staticmethod
+    def currentFileTime():
+        '''今の時刻を、process の開始時刻と比べられる FILETIME で返します (Windows 専用)。'''
+
+        now = ctypes.c_uint64()
+        ctypes.WinDLL('kernel32').GetSystemTimeAsFileTime(ctypes.byref(now))
+        return now.value
+
+    @staticmethod
+    def processDetails(pid):
+        '''process の (実行ファイル名 (小文字), 始まった時刻) を返します。分からなければ None (Windows 専用)。'''
+
+        kernel32 = ctypes.WinDLL('kernel32')
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.QueryFullProcessImageNameW.argtypes = [
+            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_wchar_p,
+            ctypes.POINTER(ctypes.c_uint32)]
+        kernel32.GetProcessTimes.argtypes = (
+            [ctypes.c_void_p] + [ctypes.POINTER(ctypes.c_uint64)] * 4)
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        # PROCESS_QUERY_LIMITED_INFORMATION
+        handle = kernel32.OpenProcess(0x1000, False, pid)
+        if not handle:
+            return None
+        try:
+            size = ctypes.c_uint32(32768)
+            path = ctypes.create_unicode_buffer(size.value)
+            times = [ctypes.c_uint64() for _ in range(4)]
+            if not kernel32.QueryFullProcessImageNameW(
+                    handle, 0, path, ctypes.byref(size)):
+                return None
+            if not kernel32.GetProcessTimes(handle, *map(ctypes.byref, times)):
+                return None
+            return ntpath.basename(path.value).lower(), times[0].value
+        finally:
+            kernel32.CloseHandle(handle)
 
     @classmethod
     def getInputTextList(cls):
