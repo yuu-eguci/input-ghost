@@ -24,6 +24,8 @@ windows専用。
     クリップボードがいつまでも変わらないと無限に待っていたので、CLIPBOARD_TIMEOUT 秒で止めるようにした。
 バージョン1.6
     前面の window を入力先として記録し、起動元のままだったり途中で変わったりしたら止めるようにした。
+バージョン1.7
+    Ctrl+V の直後に次の行をコピーすると、遅いアプリが次の行を貼っちゃうので、PASTE_SETTLE_TIME 秒あけるようにした。
 '''
 
 
@@ -52,6 +54,8 @@ class InputGhost:
     # クリップボード待ちの最大秒数と確認間隔。
     _CLIPBOARD_TIMEOUT = InputGhostSetting.CLIPBOARD_TIMEOUT
     _CLIPBOARD_INTERVAL = 0.1
+    # Ctrl+V のあと、次にクリップボードを書き換えるまで空ける秒数。
+    _PASTE_SETTLE_TIME = InputGhostSetting.PASTE_SETTLE_TIME
     # 実行後の待機秒数。
     _READY_TIME = InputGhostSetting.READY_TIME
 
@@ -116,8 +120,15 @@ class InputGhost:
         '''操作の一覧をぐるぐるしながら自動入力します。前面が targetWindow でなくなったら止めます。'''
 
         user32 = ctypes.windll.user32
+        lastPaste = None
         for index, (key, row) in enumerate(actions):
             if key in ['copypaste']:
+                # 貼り付けが終わったかは Windows では分からないので、前の Ctrl+V から
+                # PASTE_SETTLE_TIME 秒たつまでクリップボードを書き換えません。
+                if lastPaste is not None:
+                    remaining = lastPaste + cls._PASTE_SETTLE_TIME - time.monotonic()
+                    if remaining > 0:
+                        time.sleep(remaining)
                 pyperclip.copy(row)
                 # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
                 # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
@@ -143,6 +154,7 @@ class InputGhost:
                 user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
                 user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
                 user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
+                lastPaste = time.monotonic()
 
     @classmethod
     def waitForClipboard(cls, row):

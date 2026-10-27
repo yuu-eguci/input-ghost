@@ -119,6 +119,53 @@ def test_clipboard_that_updates_late_is_still_pasted(ghost, monkeypatch):
     assert ghost.events.count((86, 0)) == 3
 
 
+def test_next_row_is_copied_only_after_paste_settles(ghost, monkeypatch):
+    monkeypatch.setattr(ig.InputGhost, '_PASTE_SETTLE_TIME', 0.5)
+    timeline = []
+    fake_copy = ig.pyperclip.copy
+    fake_keybd_event = ghost.keybd_event
+
+    def copy(text):
+        timeline.append(('copy', ig.time.now))
+        fake_copy(text)
+
+    def keybd_event(keycode, scan, flags, extra):
+        if (keycode, flags) == (86, 0):
+            timeline.append(('paste', ig.time.now))
+        fake_keybd_event(keycode, scan, flags, extra)
+
+    monkeypatch.setattr(ig.pyperclip, 'copy', copy)
+    monkeypatch.setattr(ghost, 'keybd_event', keybd_event)
+
+    ig.InputGhost.run()
+
+    # 貼り付けのあと、次の行のコピーまで 0.5 秒以上あく。
+    kinds = [kind for kind, _ in timeline]
+    assert kinds == ['copy', 'paste'] * 3
+    for (_, pasted), (_, copied) in zip(timeline[1::2], timeline[2::2]):
+        assert copied - pasted >= 0.5
+    # 最後の貼り付けのあとは待たない (カウントダウン 1 秒 + 0.5 秒 x 2)。
+    assert ig.time.now == pytest.approx(2.0)
+
+
+def test_focus_change_during_paste_settle_stops_before_next_paste(ghost, monkeypatch):
+    monkeypatch.setattr(ig.InputGhost, '_PASTE_SETTLE_TIME', 0.5)
+
+    def steal_focus_while_settling():
+        # 1 行目を貼ったあとの待ち (カウントダウンの 1 秒より先に進んだ sleep) で前面を奪う。
+        if (86, 0) in ghost.events and ig.time.now > 1.0:
+            ghost.foregrounds = [OTHER]
+
+    ig.time.onSleep = steal_focus_while_settling
+
+    with pytest.raises(ig.GreenException, match=r'before action 7/12'):
+        ig.InputGhost.run()
+
+    # 2 行目は '0' と 'return' までで、2 回目の Ctrl+V は送られない。
+    assert ghost.events.count((86, 0)) == 1
+    assert ghost.events[-1] == (13, KEYUP)
+
+
 def test_stale_clipboard_stops_before_paste(ghost, monkeypatch):
     monkeypatch.setattr(ig.InputGhost, '_CLIPBOARD_TIMEOUT', 2)
     monkeypatch.setattr(ig.InputGhost, '_READY_TIME', 0)

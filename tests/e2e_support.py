@@ -46,7 +46,8 @@ def wait_until(condition, seconds):
 class Target:
     '''使い捨ての入力先 window。with を抜けたら必ず終了させる。'''
 
-    def __init__(self, directory, name):
+    def __init__(self, directory, name, pasteDelayMs=0):
+        self.pasteDelayMs = pasteDelayMs
         self.infoFile = directory / f'{name}.json'
         self.textFile = directory / f'{name}.txt'
         self.process = None
@@ -56,7 +57,7 @@ class Target:
     def __enter__(self):
         self.process = subprocess.Popen(
             [sys.executable, str(TARGET_SCRIPT),
-             str(self.infoFile), str(self.textFile)])
+             str(self.infoFile), str(self.textFile), str(self.pasteDelayMs)])
         try:
             return self._identify()
         except BaseException:
