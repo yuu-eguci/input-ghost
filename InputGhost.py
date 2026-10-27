@@ -153,7 +153,7 @@ class InputGhost:
         '''(キー, 文字列) の操作一覧を作ります。KEY_ORDER の誤りはここで弾きます。'''
 
         for key in cls._KEY_ORDER:
-            if key not in ('0', 'return', 'copypaste'):
+            if key not in cls._KEY_EVENTS:
                 raise GreenException(f'Invalid KEY_ORDER:{key}')
         return [(key, row) for row in inputTextList for key in cls._KEY_ORDER]
 
