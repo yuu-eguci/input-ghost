@@ -81,10 +81,12 @@ def test_explicit_encoding_is_strict(write):
         ig.InputGhost.readInputText()
 
 
-def test_unknown_encoding_is_refused(write):
-    write(b'abc', 'no-such-encoding')
+@pytest.mark.parametrize('encoding', ['no-such-encoding', 'base64'])
+def test_unknown_or_non_text_encoding_is_refused(write, encoding):
+    # base64 は codec としてはあるが、文字コードではない。
+    write(b'abc', encoding)
 
-    with pytest.raises(ig.GreenException, match="Unknown TEXT_ENCODING 'no-such-encoding'"):
+    with pytest.raises(ig.GreenException, match=f"Unknown TEXT_ENCODING '{encoding}'"):
         ig.InputGhost.readInputText()
 
 

@@ -439,6 +439,8 @@ class InputGhost:
         if cls._TEXT_ENCODING != 'auto':
             try:
                 codec = codecs.lookup(cls._TEXT_ENCODING).name
+                # base64 などは codec ではあっても文字コードではありません。
+                b''.decode(codec)
             except LookupError:
                 raise GreenException(
                     f'Unknown TEXT_ENCODING {cls._TEXT_ENCODING!r}. '
