@@ -16,5 +16,7 @@ KEY_ORDER = ('0', 'return', 'copypaste', 'return')
 WAIT_TIME = 1
 # クリップボードが貼りたい文字列になるまで待つ最大秒数。過ぎたら Ctrl+V せずに止まるよ。
 CLIPBOARD_TIMEOUT = 5
+# Ctrl+V のあと、次の行をクリップボードに入れるまで空ける秒数。遅いアプリが前の行を読む前に変わらないように。
+PASTE_SETTLE_TIME = 0.5
 # 実行後の待機秒数。使わないならFalseにしてね。
 READY_TIME = 5

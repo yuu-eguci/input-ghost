@@ -12,6 +12,7 @@ It automatically pastes text lines to other application. Only available for Wind
 - 分割した文字列ごとに、focus されている window へ clipboard と `keybd_event` を使って `KEY_ORDER` (`'0'`・`'return'`・`'copypaste'`) を実行します。
 - 設定は `InputGhostSetting.py` に書きます。不正な `KEY_ORDER` は、入力を始める前に検出します。
 - `copypaste` では、clipboard が貼り付けたい文字列になるまで 0.1 秒ごとに確認します。`CLIPBOARD_TIMEOUT` 秒 (既定 5 秒) 待っても変わらない場合は、Ctrl+V を送らずに `GreenException` で停止します。それまでに送った入力は入力先に残ります。押しっぱなしの key はありません。
+- 次の行を clipboard に入れるのは、前の Ctrl+V から `PASTE_SETTLE_TIME` 秒 (既定 0.5 秒) たってからです。Windows には貼り付けが終わったことを知る方法がないため、処理の遅いアプリが前の行を読む前に clipboard が次の行に変わり、同じ行が 2 回貼られるのを防ぐ待ち時間です。最後の貼り付けの後は待ちません。重いアプリで行がずれる場合は値を増やしてください (行ごとに最大でその秒数だけ遅くなります)。
 
 ## 入力先の確認と停止
 
@@ -48,5 +49,5 @@ py -m venv .venv
 
 - Linter: ruff (`pyproject.toml` に rule を書いています)
 - Tests: pytest (`tests/`)。Windows 入力を fake に置き換えるため、実際の key は送りません。
-- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「入力」「前面が変わったら次の操作の前で停止」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
+- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「複数行の入力 (貼り付けを 0.2 秒遅らせる入力先でも行がずれないこと)」「前面が変わったら次の操作の前で停止」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
 - CI (`.github/workflows/ci.yml`) は `windows-latest` 上で lint・test・`--dry-run` smoke check・E2E を実行します。deploy は行いません。
