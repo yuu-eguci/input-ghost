@@ -1,5 +1,6 @@
 '''E2E テストの道具。本物の Win32 を触るのは GitHub-hosted の Windows runner の中だけ。'''
 
+import contextlib
 import ctypes
 import json
 import os
@@ -109,6 +110,21 @@ class Target:
             if attached:
                 user32.AttachThreadInput(me, front, False)
         return wait_until(lambda: user32.GetForegroundWindow() == self.hwnd, 1)
+
+
+@contextlib.contextmanager
+def blockedInput():
+    '''この thread で keyboard と mouse の入力を止める (runner は管理者)。抜けたら必ず戻す。
+
+    止めている間、ほかの process の SendInput は 0 を返す。'''
+
+    user32 = ctypes.windll.user32
+    if not user32.BlockInput(True):
+        raise RuntimeError('BlockInput failed; input was not blocked.')
+    try:
+        yield
+    finally:
+        user32.BlockInput(False)
 
 
 def startInputGhost(textFile, keyOrder, waitTime):
