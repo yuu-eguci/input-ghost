@@ -8,19 +8,28 @@ import pytest
 import InputGhost as ig
 
 KEYUP = 0x2
+CF_UNICODETEXT = 13
 # 偽の window handle。起動元の console・入力先・別の window。
 CONSOLE, TARGET, OTHER = 100, 200, 300
+# 実行前にユーザーが clipboard に入れていた (ことにする) 合成テキスト。
+USER_CLIPBOARD = 'ユーザーの clipboard'
 
 
 class FakeUser32:
-    '''keybd_event を記録し、前面の window を偽装する偽 user32。
+    '''keybd_event を記録し、前面の window と clipboard を偽装する偽 user32。
 
     foregrounds の先頭から順に返し、最後の 1 つは返し続ける。
-    既定は「起動時は console、カウントダウン後は入力先」。'''
+    既定は「起動時は console、カウントダウン後は入力先」。
+    clipboard は文字列 (clipboardText) と、文字列以外の形式の数 (otherFormats)。'''
 
-    def __init__(self):
+    def __init__(self, clock):
+        self.clock = clock
         self.events = []
+        self.pasteTimes = []
+        self.copies = []
         self.foregrounds = [CONSOLE, TARGET]
+        self.clipboardText = USER_CLIPBOARD
+        self.otherFormats = 0
 
     def GetForegroundWindow(self):
         if len(self.foregrounds) > 1:
@@ -29,6 +38,20 @@ class FakeUser32:
 
     def keybd_event(self, keycode, scan, flags, extra):
         self.events.append((keycode, flags))
+        if (keycode, flags) == (86, 0):
+            self.pasteTimes.append(self.clock.now)
+
+    def CountClipboardFormats(self):
+        return bool(self.clipboardText) + self.otherFormats
+
+    def IsClipboardFormatAvailable(self, clipboardFormat):
+        return clipboardFormat == CF_UNICODETEXT and bool(self.clipboardText)
+
+    def copy(self, text):
+        # pyperclip.copy と同じく、clipboard を空にしてから文字列だけ入れる。
+        self.copies.append((text, self.clock.now))
+        self.clipboardText = text
+        self.otherFormats = 0
 
 
 class Forbidden:
@@ -76,11 +99,9 @@ def ghost(tmp_path, monkeypatch):
     monkeypatch.setattr(ig.begin_set, 'exec_all', lambda file_name: None)
     monkeypatch.setattr(ig, 'time', FakeClock())
 
-    clipboard = {'text': ''}
-    monkeypatch.setattr(
-        ig.pyperclip, 'copy', lambda text: clipboard.update(text=text))
-    monkeypatch.setattr(ig.pyperclip, 'paste', lambda: clipboard['text'])
-    user32 = FakeUser32()
+    user32 = FakeUser32(ig.time)
+    monkeypatch.setattr(ig.pyperclip, 'copy', user32.copy)
+    monkeypatch.setattr(ig.pyperclip, 'paste', lambda: user32.clipboardText)
     monkeypatch.setattr(
         ig.ctypes, 'windll', type('windll', (), {'user32': user32}),
         raising=False)
@@ -119,33 +140,127 @@ def test_clipboard_that_updates_late_is_still_pasted(ghost, monkeypatch):
     assert ghost.events.count((86, 0)) == 3
 
 
-def test_next_row_is_copied_only_after_paste_settles(ghost, monkeypatch):
+def test_clipboard_changes_only_after_paste_settles(ghost, monkeypatch):
     monkeypatch.setattr(ig.InputGhost, '_PASTE_SETTLE_TIME', 0.5)
-    timeline = []
-    fake_copy = ig.pyperclip.copy
-    fake_keybd_event = ghost.keybd_event
-
-    def copy(text):
-        timeline.append(('copy', ig.time.now))
-        fake_copy(text)
-
-    def keybd_event(keycode, scan, flags, extra):
-        if (keycode, flags) == (86, 0):
-            timeline.append(('paste', ig.time.now))
-        fake_keybd_event(keycode, scan, flags, extra)
-
-    monkeypatch.setattr(ig.pyperclip, 'copy', copy)
-    monkeypatch.setattr(ghost, 'keybd_event', keybd_event)
 
     ig.InputGhost.run()
 
-    # 貼り付けのあと、次の行のコピーまで 0.5 秒以上あく。
-    kinds = [kind for kind, _ in timeline]
-    assert kinds == ['copy', 'paste'] * 3
-    for (_, pasted), (_, copied) in zip(timeline[1::2], timeline[2::2]):
+    # 3 行のコピーのあと、最後に元の clipboard へ戻す。
+    assert [text for text, _ in ghost.copies] == [
+        'あいうえお', 'かき', 'さし す', USER_CLIPBOARD]
+    # どの貼り付けのあとも、次に clipboard を書き換えるまで 0.5 秒以上あく。
+    for pasted, (_, copied) in zip(ghost.pasteTimes, ghost.copies[1:]):
         assert copied - pasted >= 0.5
-    # 最後の貼り付けのあとは待たない (カウントダウン 1 秒 + 0.5 秒 x 2)。
-    assert ig.time.now == pytest.approx(2.0)
+    assert ghost.clipboardText == USER_CLIPBOARD
+
+
+def steal_focus_right_after_first_paste(ghost, monkeypatch):
+    # Ctrl+V を送り終えた直後に前面を奪う。次の操作 ('return') の前で止まる。
+    send = ghost.keybd_event
+
+    def keybd_event(keycode, scan, flags, extra):
+        send(keycode, scan, flags, extra)
+        if (keycode, flags) == (86, KEYUP):
+            ghost.foregrounds = [OTHER]
+
+    monkeypatch.setattr(ghost, 'keybd_event', keybd_event)
+    return ig.GreenException, 'before action 4/12'
+
+
+def keep_clipboard_stale(ghost, monkeypatch):
+    # clipboard が行の文字列にならないまま CLIPBOARD_TIMEOUT 秒たつ。
+    monkeypatch.setattr(ig.pyperclip, 'paste', lambda: USER_CLIPBOARD)
+    return ig.GreenException, 'within 5s'
+
+
+def fail_to_copy_rows(ghost, monkeypatch):
+    # 行のコピーだけ失敗する (元に戻すコピーは成功する)。
+    def copy(text):
+        if text != USER_CLIPBOARD:
+            raise ig.pyperclip.PyperclipException('clipboard is locked')
+        ghost.copy(text)
+
+    monkeypatch.setattr(ig.pyperclip, 'copy', copy)
+    return ig.pyperclip.PyperclipException, 'clipboard is locked'
+
+
+@pytest.mark.parametrize('stop', [
+    steal_focus_right_after_first_paste, keep_clipboard_stale, fail_to_copy_rows])
+def test_stopped_run_keeps_its_error_and_restores_clipboard_after_settle(
+        ghost, monkeypatch, stop):
+    monkeypatch.setattr(ig.InputGhost, '_PASTE_SETTLE_TIME', 0.5)
+    error, message = stop(ghost, monkeypatch)
+
+    with pytest.raises(error, match=message):
+        ig.InputGhost.run()
+
+    assert ghost.clipboardText == USER_CLIPBOARD
+    restored = ghost.copies[-1][1]
+    for pasted in ghost.pasteTimes:
+        assert restored - pasted >= 0.5
+
+
+def test_failed_restore_after_a_stop_keeps_the_original_error(
+        ghost, monkeypatch, capsys):
+    steal_focus_right_after_first_paste(ghost, monkeypatch)
+
+    def copy(text):
+        if text == USER_CLIPBOARD:
+            raise ig.pyperclip.PyperclipException('restore failed')
+        ghost.copy(text)
+
+    monkeypatch.setattr(ig.pyperclip, 'copy', copy)
+
+    with pytest.raises(ig.GreenException, match='Foreground window changed'):
+        ig.InputGhost.run()
+
+    assert 'could not restore the clipboard' in capsys.readouterr().err
+
+
+def test_failed_restore_after_a_normal_run_is_an_error(ghost, monkeypatch):
+    def copy(text):
+        if text == USER_CLIPBOARD:
+            raise ig.pyperclip.PyperclipException('restore failed')
+        ghost.copy(text)
+
+    monkeypatch.setattr(ig.pyperclip, 'copy', copy)
+
+    with pytest.raises(ig.pyperclip.PyperclipException, match='restore failed'):
+        ig.InputGhost.run()
+
+    # 入力自体は最後まで送られている。
+    assert ghost.events.count((86, 0)) == 3
+
+
+def test_empty_clipboard_is_left_empty(ghost):
+    ghost.clipboardText = ''
+
+    ig.InputGhost.run()
+
+    assert ghost.copies[-1][0] == ''
+    assert ghost.CountClipboardFormats() == 0
+
+
+def test_non_text_clipboard_is_refused_before_any_input(ghost):
+    # 画像やファイルなど、文字列のない clipboard は戻せないので触らない。
+    ghost.clipboardText = ''
+    ghost.otherFormats = 2
+
+    with pytest.raises(ig.GreenException, match='non-text.*Nothing was sent'):
+        ig.InputGhost.run()
+
+    assert ghost.events == []
+    assert ghost.copies == []
+    assert ghost.otherFormats == 2
+
+
+def test_clipboard_is_untouched_when_nothing_is_copied(ghost, monkeypatch):
+    monkeypatch.setattr(ig.InputGhost, '_KEY_ORDER', ('0', 'return'))
+
+    ig.InputGhost.run()
+
+    assert ghost.events
+    assert ghost.copies == []
 
 
 def test_focus_change_during_paste_settle_stops_before_next_paste(ghost, monkeypatch):
@@ -191,6 +306,7 @@ def test_no_new_target_window_sends_nothing(
         ig.InputGhost.run()
 
     assert ghost.events == []
+    assert ghost.copies == []
 
 
 def test_focus_change_stops_before_next_key(ghost):
