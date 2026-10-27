@@ -48,6 +48,12 @@ It automatically pastes text lines to other application. Only available for Wind
 - 止めたいときは、別の window をクリックするか Alt+Tab してください (Win+L でも止まります)。入力先のアプリが dialog を開いた場合も停止します。
 - 制限: 1 つの操作 (Ctrl+V など) の key の途中では確認しないため、押しっぱなしの key は残りません。管理者権限で動くアプリには、Windows の UIPI の制限で入力が届かないことがあり、これは検出できません。
 
+## 止まったときの表示
+
+- InputGhost が安全のために止まるとき (設定・テキストファイル・clipboard・入力先・タイムアウトなどの理由) は、stderr に `InputGhost: <理由>` を 1 行だけ表示し、終了コード 1 で終わります。Python の traceback は表示しません。理由の文には、何番目の操作で止まったか・何も送っていないか、なども書いてあります。
+- clipboard を戻せなかった場合は、その 1 行の前に、戻せなかったことをもう 1 行表示します。
+- 予期しないエラー (InputGhost のバグなど) のときは、調べられるように Python の traceback をそのまま表示し、0 以外の終了コードで終わります。
+
 ## 実行環境
 
 - Windows + Python 3 (CI は `windows-latest` 上の 3.13 を使います)
