@@ -375,7 +375,6 @@ class InputGhost:
     def processDetails(pid):
         '''process の (実行ファイル名 (小文字), 始まった時刻) を返します。分からなければ None (Windows 専用)。'''
 
-        return None  # 一時的な mutation: 本物の process 情報を使わない。
         kernel32 = ctypes.WinDLL('kernel32')
         kernel32.OpenProcess.restype = ctypes.c_void_p
         kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
