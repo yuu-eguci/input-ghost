@@ -1,5 +1,6 @@
 '''E2E テストの道具。本物の Win32 を触るのは GitHub-hosted の Windows runner の中だけ。'''
 
+import contextlib
 import ctypes
 import json
 import os
@@ -133,6 +134,100 @@ class Target:
             if attached:
                 user32.AttachThreadInput(me, front, False)
         return wait_until(lambda: user32.GetForegroundWindow() == self.hwnd, 1)
+
+
+# runner の clipboard に置く、文字列ではない独自の形式の名前。
+NON_TEXT_FORMAT_NAME = 'InputGhost.E2E.SyntheticNonText'
+
+
+def clipboardApi():
+    '''clipboard を直接触るための user32・kernel32。handle は pointer の大きさで受け取る。'''
+
+    user32 = ctypes.WinDLL('user32')
+    kernel32 = ctypes.WinDLL('kernel32')
+    handle = ctypes.c_void_p
+    user32.CreateWindowExW.restype = handle
+    user32.CreateWindowExW.argtypes = (
+        [ctypes.c_uint32, ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint32]
+        + [ctypes.c_int] * 4 + [handle] * 4)
+    user32.DestroyWindow.argtypes = [handle]
+    user32.OpenClipboard.argtypes = [handle]
+    user32.RegisterClipboardFormatW.argtypes = [ctypes.c_wchar_p]
+    user32.RegisterClipboardFormatW.restype = ctypes.c_uint32
+    user32.SetClipboardData.argtypes = [ctypes.c_uint32, handle]
+    user32.SetClipboardData.restype = handle
+    user32.GetClipboardData.argtypes = [ctypes.c_uint32]
+    user32.GetClipboardData.restype = handle
+    user32.EnumClipboardFormats.argtypes = [ctypes.c_uint32]
+    user32.EnumClipboardFormats.restype = ctypes.c_uint32
+    user32.GetClipboardSequenceNumber.restype = ctypes.c_uint32
+    kernel32.GlobalAlloc.argtypes = [ctypes.c_uint32, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = handle
+    kernel32.GlobalLock.argtypes = [handle]
+    kernel32.GlobalLock.restype = handle
+    kernel32.GlobalUnlock.argtypes = [handle]
+    kernel32.GlobalSize.argtypes = [handle]
+    kernel32.GlobalSize.restype = ctypes.c_size_t
+    kernel32.GlobalFree.argtypes = [handle]
+    return user32, kernel32
+
+
+@contextlib.contextmanager
+def openClipboard(user32, owner=None):
+    # ほかの process が開いていることもあるので、少しだけ待つ。
+    if not wait_until(lambda: user32.OpenClipboard(owner), 2):
+        raise RuntimeError('Could not open the clipboard.')
+    try:
+        yield
+    finally:
+        user32.CloseClipboard()
+
+
+def putNonTextClipboard(payload):
+    '''runner の clipboard を、独自の形式 1 つ (中身は payload) だけにする。形式の番号を返す。'''
+
+    user32, kernel32 = clipboardApi()
+    clipboardFormat = user32.RegisterClipboardFormatW(NON_TEXT_FORMAT_NAME)
+    # SetClipboardData には持ち主の window が要るので、見えない window を作る。
+    owner = user32.CreateWindowExW(0, 'STATIC', None, 0, 0, 0, 0, 0, None, None, None, None)
+    if not clipboardFormat or not owner:
+        raise RuntimeError('Could not prepare the non-text clipboard.')
+    try:
+        with openClipboard(user32, owner):
+            user32.EmptyClipboard()
+            memory = kernel32.GlobalAlloc(0x0002, len(payload))  # GMEM_MOVEABLE
+            ctypes.memmove(kernel32.GlobalLock(memory), payload, len(payload))
+            kernel32.GlobalUnlock(memory)
+            if not user32.SetClipboardData(clipboardFormat, memory):
+                kernel32.GlobalFree(memory)
+                raise RuntimeError('SetClipboardData failed.')
+    finally:
+        user32.DestroyWindow(owner)
+    return clipboardFormat
+
+
+def readClipboard(clipboardFormat):
+    '''(clipboard にある形式の一覧, clipboardFormat の中身の byte) を返す。'''
+
+    user32, kernel32 = clipboardApi()
+    with openClipboard(user32):
+        formats = []
+        current = user32.EnumClipboardFormats(0)
+        while current:
+            formats.append(current)
+            current = user32.EnumClipboardFormats(current)
+        data = None
+        memory = user32.GetClipboardData(clipboardFormat)
+        if memory:
+            data = ctypes.string_at(kernel32.GlobalLock(memory), kernel32.GlobalSize(memory))
+            kernel32.GlobalUnlock(memory)
+    return formats, data
+
+
+def clipboardSequence():
+    '''clipboard が書き換えられるたびに増える番号 (同じ中身を書き直しても増える)。'''
+
+    return clipboardApi()[0].GetClipboardSequenceNumber()
 
 
 def startInputGhost(textFile, keyOrder, waitTime, launch=None):
