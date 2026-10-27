@@ -133,7 +133,22 @@ def ghost(tmp_path, monkeypatch):
 
 
 def test_text_is_split_into_chunks(ghost):
-    assert ig.InputGhost.getInputTextList() == ['あいうえお', 'かき', 'さし す']
+    text, _ = ig.InputGhost.readInputText()
+
+    assert ig.InputGhost.splitRows(text) == ['あいうえお', 'かき', 'さし す']
+
+
+def test_unreadable_text_file_sends_nothing(ghost, tmp_path, monkeypatch):
+    # UTF-8 の日本語が cp932 としても読めてしまうファイル。決めつけずに止まる。
+    path = tmp_path / 'ambiguous.txt'
+    path.write_bytes('こんにちは世界'.encode('utf-8'))
+    monkeypatch.setattr(ig.InputGhost, '_TEXT_FILE_NAME', str(path))
+
+    with pytest.raises(ig.GreenException, match='both as UTF-8 and as cp932'):
+        ig.InputGhost.run()
+
+    assert ghost.events == []
+    assert ghost.copies == []
 
 
 def test_real_run_sends_key_order_for_each_chunk(ghost):
@@ -557,6 +572,7 @@ def test_dry_run_prints_plan_and_sends_nothing(ghost, monkeypatch, capsys):
     ig.main(['--dry-run'])
 
     out = capsys.readouterr().out
+    assert out.splitlines()[0].endswith('synthetic.txt (cp932)')
     assert 'paste あいうえお' in out
     assert 'paste さし す' in out
     assert out.count('key return') == 6
