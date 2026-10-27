@@ -12,8 +12,8 @@ import pyperclip
 import pytest
 
 from e2e_support import (
-    PYTHONW, SLEEPER_SCRIPT, Target, e2e_enabled, killPid, startInputGhost,
-    wait_until)
+    LAUNCHER_SCRIPT, PYTHONW, SLEEPER_SCRIPT, Target, e2e_enabled, killPid,
+    startInputGhost, wait_until)
 
 HOSTED = {
     'INPUTGHOST_E2E': '1',
@@ -143,6 +143,33 @@ def test_real_launched_target_is_waited_for_and_used(desktop, tmp_path):
             out, err = process.communicate(timeout=60)
             assert process.returncode == 0, err
             assert launched.text() == '# ghost e2e 1\n# ghost e2e 2\n'
+    except RuntimeError as error:
+        process.kill()
+        pytest.fail(f'{error} InputGhost was killed.')
+
+    assert target.text() == ''
+    assert decoy.text() == ''
+    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
+
+
+@needs_hosted_windows
+def test_real_window_handed_off_to_a_new_process_is_used(desktop, tmp_path):
+    start, decoy, target = desktop
+    handed = Target(tmp_path, 'handed', launch=False)
+    # launcher が入力先を別の process で起動してすぐ終わる。window の持ち主は起動した
+    # process ではないので、「起動後に始まった同じ実行ファイル」として見つかるはず。
+    command = subprocess.list2cmdline(
+        [str(PYTHONW), str(LAUNCHER_SCRIPT), *handed.command()[1:]])
+    process = start(ROWS[:2], ['copypaste', 'return'], 0.5, (command, 10))
+
+    try:
+        with handed:
+            if not handed.bringToFront():
+                process.kill()
+                pytest.fail('Could not bring the handed-off target to front; InputGhost was killed.')
+            out, err = process.communicate(timeout=60)
+            assert process.returncode == 0, err
+            assert handed.text() == '# ghost e2e 1\n# ghost e2e 2\n'
     except RuntimeError as error:
         process.kill()
         pytest.fail(f'{error} InputGhost was killed.')

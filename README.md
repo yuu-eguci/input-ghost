@@ -56,5 +56,5 @@ py -m venv .venv
 
 - Linter: ruff (`pyproject.toml` に rule を書いています)
 - Tests: pytest (`tests/`)。Windows 入力を fake に置き換えるため、実際の key は送りません。
-- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「複数行の入力 (貼り付けを 0.2 秒遅らせる入力先でも行がずれないこと)」「前面が変わったら次の操作の前で停止」「終了後・停止後に元の clipboard の文字列が戻ること」「`READY_TIME = False` で起動した入力先を待って使い、前からある別の window には打たないこと」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
+- E2E (`tests/test_e2e_windows.py`): GitHub-hosted の Windows runner 上で `INPUTGHOST_E2E=1` のときだけ実行し、それ以外の環境では skip します (`INPUTGHOST_E2E=1` なのに GitHub-hosted runner でない場合は、key を送らずに失敗します)。repo 内の使い捨て入力先 (`tests/e2e_target.py`、tkinter) を 2 つ起動し、本物の key で「起動元から入力先への切り替え」「複数行の入力 (貼り付けを 0.2 秒遅らせる入力先でも行がずれないこと)」「前面が変わったら次の操作の前で停止」「終了後・停止後に元の clipboard の文字列が戻ること」「`READY_TIME = False` で起動した入力先 (別の process に引き継ぐものも) を待って使い、前からある別の window には打たないこと」を確認します。入力先を前面にできない場合は、何も送らずに失敗します。入力する文字列は `#` で始まる、command として実行されないテスト用の文章だけです。
 - CI (`.github/workflows/ci.yml`) は `windows-latest` 上で lint・test・`--dry-run` smoke check・E2E を実行します。deploy は行いません。

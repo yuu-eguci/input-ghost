@@ -12,6 +12,7 @@ import time
 REPO = pathlib.Path(__file__).resolve().parent.parent
 TARGET_SCRIPT = pathlib.Path(__file__).resolve().parent / 'e2e_target.py'
 SLEEPER_SCRIPT = pathlib.Path(__file__).resolve().parent / 'e2e_sleeper.py'
+LAUNCHER_SCRIPT = pathlib.Path(__file__).resolve().parent / 'e2e_launcher.py'
 # 使い捨ての process は console を作らない pythonw で動かす (余計な window が前面に来ない)。
 PYTHONW = pathlib.Path(sys.executable).with_name('pythonw.exe')
 
