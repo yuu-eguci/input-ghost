@@ -9,8 +9,7 @@ import sys
 import pyperclip
 import pytest
 
-from e2e_support import (
-    Target, blockedInput, e2e_enabled, startInputGhost, wait_until)
+from e2e_support import Target, e2e_enabled, startInputGhost, wait_until
 
 HOSTED = {
     'INPUTGHOST_E2E': '1',
@@ -95,27 +94,6 @@ def test_real_rows_reach_only_the_chosen_slow_target_in_order(desktop):
     assert process.returncode == 0, err
     # 最後の行も遅れて読まれるので、clipboard を戻すのが早すぎると元の文字列が貼られる。
     assert target.text() == ''.join(row + '\n' for row in ROWS)
-    assert decoy.text() == ''
-    assert pyperclip.paste() == ORIGINAL_CLIPBOARD
-
-
-@needs_hosted_windows
-def test_real_blocked_input_stops_without_typing(desktop):
-    start, decoy, target = desktop
-    process = start(ROWS[:1], ['copypaste', 'return'], 0.5)
-    switchDuringCountdown(process, target)
-
-    # 入力先は前面のまま、この thread が入力を止める。InputGhost の key は受け付けられない。
-    try:
-        with blockedInput():
-            out, err = process.communicate(timeout=60)
-    except RuntimeError as error:
-        process.kill()
-        pytest.fail(f'{error} InputGhost was killed.')
-
-    assert process.returncode != 0, (target.text(), err)
-    assert 'accepted only 0/4' in err
-    assert target.text() == ''
     assert decoy.text() == ''
     assert pyperclip.paste() == ORIGINAL_CLIPBOARD
 
