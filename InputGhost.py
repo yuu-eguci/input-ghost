@@ -26,12 +26,16 @@ windows専用。
     前面の window を入力先として記録し、起動元のままだったり途中で変わったりしたら止めるようにした。
 バージョン1.7
     Ctrl+V の直後に次の行をコピーすると、遅いアプリが次の行を貼っちゃうので、PASTE_SETTLE_TIME 秒あけるようにした。
+バージョン1.8
+    実行前のクリップボードの文字列を、終わったときも途中で止まったときも元に戻すようにした。
+    文字列のないクリップボード(画像やファイル)は戻せないので、何も送らずに止まる。
 '''
 
 
 import argparse
 import ctypes
 import subprocess
+import sys
 import time
 import pyperclip
 import InputGhostSetting
@@ -64,6 +68,8 @@ class InputGhost:
     _KEYCODE_RETURN = 13
     _KEYCODE_CTRL = 17
     _KEYCODE_V = 86
+    # クリップボードの形式。
+    _CF_UNICODETEXT = 13
 
     @classmethod
     def run(cls, dryRun=False):
@@ -117,44 +123,86 @@ class InputGhost:
 
     @classmethod
     def inputAutomatically(cls, actions, targetWindow):
-        '''操作の一覧をぐるぐるしながら自動入力します。前面が targetWindow でなくなったら止めます。'''
+        '''操作の一覧をぐるぐるしながら自動入力します。前面が targetWindow でなくなったら止めます。
+        終わったときも止まったときも、クリップボードを元の文字列に戻します。'''
 
         user32 = ctypes.windll.user32
+        savedClipboard = cls.saveClipboard(user32)
         lastPaste = None
-        for index, (key, row) in enumerate(actions):
-            if key in ['copypaste']:
-                # 貼り付けが終わったかは Windows では分からないので、前の Ctrl+V から
-                # PASTE_SETTLE_TIME 秒たつまでクリップボードを書き換えません。
-                if lastPaste is not None:
-                    remaining = lastPaste + cls._PASTE_SETTLE_TIME - time.monotonic()
-                    if remaining > 0:
-                        time.sleep(remaining)
-                pyperclip.copy(row)
-                # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
-                # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
-                cls.waitForClipboard(row)
-                time.sleep(cls._WAIT_TIME)
+        copied = False
+        try:
+            for index, (key, row) in enumerate(actions):
+                if key in ['copypaste']:
+                    # 貼り付けが終わったかは Windows では分からないので、前の Ctrl+V から
+                    # PASTE_SETTLE_TIME 秒たつまでクリップボードを書き換えません。
+                    cls.waitForPasteSettle(lastPaste)
+                    copied = True
+                    pyperclip.copy(row)
+                    # 処理速度の問題(たぶん)でクリップボードに貼り付け終わるよりも前にCtrl+Vしてしまうことがある(ような気がする)。
+                    # 対策として、貼ろうと意図してる文字列とクリップボードの内容をすり合わせます。
+                    cls.waitForClipboard(row)
+                    time.sleep(cls._WAIT_TIME)
 
-            # キーを送る直前に、前面がまだ入力先か確かめます。1 つの操作の途中では止めません。
-            if user32.GetForegroundWindow() != targetWindow:
-                raise GreenException(
-                    'Foreground window changed, so InputGhost stopped before '
-                    f'action {index + 1}/{len(actions)} ({key}). '
-                    f'{index} actions already sent stay in the target window; '
-                    'no key is left pressed.')
+                # キーを送る直前に、前面がまだ入力先か確かめます。1 つの操作の途中では止めません。
+                if user32.GetForegroundWindow() != targetWindow:
+                    raise GreenException(
+                        'Foreground window changed, so InputGhost stopped before '
+                        f'action {index + 1}/{len(actions)} ({key}). '
+                        f'{index} actions already sent stay in the target window; '
+                        'no key is left pressed.')
 
-            if key in ['0']:
-                user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
-                user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
-            elif key in ['return']:
-                user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
-                user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
-            elif key in ['copypaste']:
-                user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
-                user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
-                user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
-                user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
-                lastPaste = time.monotonic()
+                if key in ['0']:
+                    user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
+                    user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
+                elif key in ['return']:
+                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
+                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
+                elif key in ['copypaste']:
+                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
+                    user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
+                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
+                    user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
+                    lastPaste = time.monotonic()
+        except BaseException:
+            # 元のエラーを優先します。戻せなかったら、そのことを表示するだけ。
+            if copied:
+                try:
+                    cls.restoreClipboard(savedClipboard, lastPaste)
+                except Exception as error:
+                    print(f'InputGhost could not restore the clipboard: {error}',
+                          file=sys.stderr)
+            raise
+        if copied:
+            cls.restoreClipboard(savedClipboard, lastPaste)
+
+    @classmethod
+    def saveClipboard(cls, user32):
+        '''今のクリップボードの文字列を返します。空なら ''。文字列がなければ何も送らずに止めます。'''
+
+        if user32.IsClipboardFormatAvailable(cls._CF_UNICODETEXT):
+            return pyperclip.paste()
+        if user32.CountClipboardFormats() == 0:
+            return ''
+        raise GreenException(
+            'The clipboard holds non-text data (such as an image or files) '
+            'that InputGhost cannot restore. Nothing was sent; copy some text '
+            'or clear the clipboard first.')
+
+    @classmethod
+    def restoreClipboard(cls, savedClipboard, lastPaste):
+        '''最後の Ctrl+V が読み終わるのを待ってから、クリップボードを戻します。'' なら空にします。'''
+
+        cls.waitForPasteSettle(lastPaste)
+        pyperclip.copy(savedClipboard)
+
+    @classmethod
+    def waitForPasteSettle(cls, lastPaste):
+        '''前の Ctrl+V (lastPaste) から PASTE_SETTLE_TIME 秒たつまで待ちます。'''
+
+        if lastPaste is not None:
+            remaining = lastPaste + cls._PASTE_SETTLE_TIME - time.monotonic()
+            if remaining > 0:
+                time.sleep(remaining)
 
     @classmethod
     def waitForClipboard(cls, row):
