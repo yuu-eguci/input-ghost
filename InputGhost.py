@@ -29,6 +29,9 @@ windows専用。
 バージョン1.8
     実行前のクリップボードの文字列を、終わったときも途中で止まったときも元に戻すようにした。
     文字列のないクリップボード(画像やファイル)は戻せないので、何も送らずに止まる。
+バージョン1.9
+    古い keybd_event をやめて、1 つの操作の key を SendInput でまとめて送るようにした。
+    Windows が全部を受け付けなかったら、押したままの key を離して止まる。
 '''
 
 
@@ -40,6 +43,32 @@ import time
 import pyperclip
 import InputGhostSetting
 import begin_set
+
+
+# SendInput に渡す構造体。union には一番大きい MOUSEINPUT も入れないと、
+# INPUT の大きさが Windows の期待とずれて、SendInput が全部断ります。
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [('wVk', ctypes.c_uint16), ('wScan', ctypes.c_uint16),
+                ('dwFlags', ctypes.c_uint32), ('time', ctypes.c_uint32),
+                ('dwExtraInfo', ctypes.c_size_t)]
+
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [('dx', ctypes.c_int32), ('dy', ctypes.c_int32),
+                ('mouseData', ctypes.c_uint32), ('dwFlags', ctypes.c_uint32),
+                ('time', ctypes.c_uint32), ('dwExtraInfo', ctypes.c_size_t)]
+
+
+class INPUTUNION(ctypes.Union):
+    _fields_ = [('ki', KEYBDINPUT), ('mi', MOUSEINPUT)]
+
+
+class INPUT(ctypes.Structure):
+    _fields_ = [('type', ctypes.c_uint32), ('u', INPUTUNION)]
+
+
+INPUT_KEYBOARD = 1
+KEYEVENTF_KEYUP = 0x2
 
 
 class InputGhost:
@@ -68,6 +97,13 @@ class InputGhost:
     _KEYCODE_RETURN = 13
     _KEYCODE_CTRL = 17
     _KEYCODE_V = 86
+    # 各操作で送る key (キーコード, flags)。押した key は必ず同じ操作の中で離します。
+    _KEY_EVENTS = {
+        '0': ((_KEYCODE_0, 0), (_KEYCODE_0, KEYEVENTF_KEYUP)),
+        'return': ((_KEYCODE_RETURN, 0), (_KEYCODE_RETURN, KEYEVENTF_KEYUP)),
+        'copypaste': ((_KEYCODE_CTRL, 0), (_KEYCODE_V, 0),
+                      (_KEYCODE_CTRL, KEYEVENTF_KEYUP), (_KEYCODE_V, KEYEVENTF_KEYUP)),
+    }
     # クリップボードの形式。
     _CF_UNICODETEXT = 13
 
@@ -151,18 +187,21 @@ class InputGhost:
                         f'{index} actions already sent stay in the target window; '
                         'no key is left pressed.')
 
-                if key in ['0']:
-                    user32.keybd_event(cls._KEYCODE_0, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_0, 0, 0x2, 0)
-                elif key in ['return']:
-                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_RETURN, 0, 0x2, 0)
-                elif key in ['copypaste']:
-                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_V, 0, 0, 0)
-                    user32.keybd_event(cls._KEYCODE_CTRL, 0, 0x2, 0)
-                    user32.keybd_event(cls._KEYCODE_V, 0, 0x2, 0)
+                # 1 つの操作の key は 1 回の SendInput でまとめて送ります。
+                events = cls._KEY_EVENTS[key]
+                sent = cls.sendKeys(user32, events)
+                if key in ['copypaste'] and sent:
+                    # 一部でも受け付けられたら、貼られたかもしれないものとして扱います。
                     lastPaste = time.monotonic()
+                if sent != len(events):
+                    released = cls.releaseKeys(user32, events, sent)
+                    raise GreenException(
+                        f'Windows accepted only {sent}/{len(events)} key events '
+                        f'for action {index + 1}/{len(actions)} ({key}), so '
+                        f'InputGhost stopped. {index} actions already sent stay '
+                        'in the target window; '
+                        + ('no key is left pressed.' if released
+                           else 'some keys may still be pressed.'))
         except BaseException:
             # 元のエラーを優先します。戻せなかったら、そのことを表示するだけ。
             if copied:
@@ -174,6 +213,29 @@ class InputGhost:
             raise
         if copied:
             cls.restoreClipboard(savedClipboard, lastPaste)
+
+    @classmethod
+    def sendKeys(cls, user32, events):
+        '''(キーコード, flags) の一覧を 1 回の SendInput で送り、受け付けられた数を返します。'''
+
+        inputs = (INPUT * len(events))(*[
+            INPUT(type=INPUT_KEYBOARD,
+                  u=INPUTUNION(ki=KEYBDINPUT(wVk=keycode, dwFlags=flags)))
+            for keycode, flags in events])
+        return user32.SendInput(len(events), inputs, ctypes.sizeof(INPUT))
+
+    @classmethod
+    def releaseKeys(cls, user32, events, sent):
+        '''受け付けられた sent 個のうち、押したまま離していない key を離します。できたら True。'''
+
+        pressed = [keycode for keycode, flags in events[:sent]
+                   if not flags & KEYEVENTF_KEYUP]
+        released = [keycode for keycode, flags in events[:sent]
+                    if flags & KEYEVENTF_KEYUP]
+        releases = [(keycode, flags) for keycode, flags in events[sent:]
+                    if flags & KEYEVENTF_KEYUP
+                    and keycode in pressed and keycode not in released]
+        return not releases or cls.sendKeys(user32, releases) == len(releases)
 
     @classmethod
     def saveClipboard(cls, user32):
