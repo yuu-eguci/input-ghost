@@ -553,6 +553,66 @@ def test_focus_change_stops_before_next_key(ghost):
     assert ghost.events == [(48, 0), (48, KEYUP), (13, 0), (13, KEYUP)]
 
 
+INVALID_SETTINGS = [
+    ('NUM_CHARA_IN_ROW', 0), ('NUM_CHARA_IN_ROW', -1), ('NUM_CHARA_IN_ROW', True),
+    ('NUM_CHARA_IN_ROW', 1.5), ('NUM_CHARA_IN_ROW', '18'), ('NUM_CHARA_IN_ROW', None),
+    ('READY_TIME', True), ('READY_TIME', -1), ('READY_TIME', 1.5),
+    ('READY_TIME', '5'), ('READY_TIME', None),
+    ('WAIT_TIME', -0.1), ('WAIT_TIME', True), ('WAIT_TIME', '1'), ('WAIT_TIME', None),
+    ('WAIT_TIME', float('nan')), ('WAIT_TIME', float('inf')),
+    ('PASTE_SETTLE_TIME', -0.5), ('PASTE_SETTLE_TIME', False),
+    ('PASTE_SETTLE_TIME', float('inf')),
+    ('CLIPBOARD_TIMEOUT', -1), ('CLIPBOARD_TIMEOUT', True),
+    ('CLIPBOARD_TIMEOUT', float('nan')),
+    ('LAUNCH_TIMEOUT', -1), ('LAUNCH_TIMEOUT', True), ('LAUNCH_TIMEOUT', '10'),
+]
+
+
+@pytest.mark.parametrize('dry_run', [False, True], ids=['run', 'dry-run'])
+@pytest.mark.parametrize('name, value', INVALID_SETTINGS)
+def test_invalid_number_setting_stops_before_anything(
+        ghost, monkeypatch, capsys, name, value, dry_run):
+    monkeypatch.setattr(ig.InputGhost, f'_{name}', value)
+    # 設定はテキストファイルを読む前に確かめる (ファイルがなくても設定のエラーになる)。
+    monkeypatch.setattr(ig.InputGhost, '_TEXT_FILE_NAME', 'no-such-file.txt')
+    monkeypatch.setattr(ig.pyperclip, 'paste', Forbidden())
+
+    with pytest.raises(
+            ig.GreenException,
+            match=rf'^{name} must be .+, but it is .+\. Nothing was sent\.$'):
+        ig.main(['--dry-run'] if dry_run else [])
+
+    assert ghost.events == []
+    assert ghost.copies == []
+    assert ig.time.sleeps == 0
+    assert capsys.readouterr().out == ''
+
+
+def test_negative_wait_time_is_refused_before_the_first_key(ghost, monkeypatch):
+    # 本物の time.sleep は負の秒数で ValueError になるので、前は最初の key を送ったあとで落ちていた。
+    monkeypatch.setattr(ig.InputGhost, '_WAIT_TIME', -0.1)
+
+    with pytest.raises(ig.GreenException, match='WAIT_TIME must be'):
+        ig.InputGhost.run()
+
+    assert ghost.events == []
+    assert ghost.copies == []
+
+
+@pytest.mark.parametrize('name, value', [
+    ('NUM_CHARA_IN_ROW', 1), ('READY_TIME', 0), ('READY_TIME', 2),
+    ('WAIT_TIME', 0), ('WAIT_TIME', 0.25), ('PASTE_SETTLE_TIME', 0),
+    ('CLIPBOARD_TIMEOUT', 0), ('CLIPBOARD_TIMEOUT', 2.5), ('LAUNCH_TIMEOUT', 0),
+])
+def test_boundary_values_still_run(ghost, monkeypatch, name, value):
+    monkeypatch.setattr(ig.InputGhost, f'_{name}', value)
+
+    ig.InputGhost.run()
+
+    assert (86, 0) in ghost.events
+    assert ghost.clipboardText == USER_CLIPBOARD
+
+
 def test_invalid_key_order_is_rejected_before_any_input(ghost, monkeypatch):
     monkeypatch.setattr(ig.InputGhost, '_KEY_ORDER', ('0', 'typo'))
 

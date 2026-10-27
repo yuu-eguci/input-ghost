@@ -30,6 +30,14 @@ It automatically pastes text lines to other application. Only available for Wind
 - 読んだ文字列に NUL 文字が入っている場合 (BOM のない UTF-16 など) も停止します。
 - 停止するときは、key を送らず、clipboard にも触りません。`--dry-run` でも同じように判定し、最初の行に読んだファイルと文字コードを表示します。
 
+## 設定の値
+
+数の設定は、テキストファイルを読む前 (`--dry-run` でも) に確かめます。次に当てはまらない値があれば、key を送らず、clipboard にも触らず、アプリも起動せずに、どの設定がおかしいかを表示して停止します。`True` や `False` は、Python では 1 や 0 として計算できてしまいますが、下の `READY_TIME = False` 以外では使えません。
+
+- `NUM_CHARA_IN_ROW`: 1 以上の整数。
+- `READY_TIME`: `False` (アプリを起動する mode) か、0 以上の整数 (カウントダウンの秒数)。
+- `WAIT_TIME`・`PASTE_SETTLE_TIME`・`CLIPBOARD_TIMEOUT`・`LAUNCH_TIMEOUT`: 0 以上の秒数 (整数か小数)。無限大や NaN は使えません。0 にすると、待たない (タイムアウトなら 1 回だけ確かめる) という意味になります。
+
 ## 入力先の確認と停止
 
 - 通常実行では、カウントダウン後に前面にある window を入力先として記録します。前面が InputGhost を起動した window のまま、または前面に window がない場合は、何も送らずに停止します。
