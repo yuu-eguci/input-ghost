@@ -41,9 +41,11 @@ needs_hosted_windows = pytest.mark.skipif(
     reason='GitHub-hosted Windows runner で INPUTGHOST_E2E=1 のときだけ動く')
 
 # command として実行されないよう、# で始まるテスト用の文章だけを打つ。
-# どのテストも clipboard へのコピーは 1 回だけにする (Ctrl+V 直後に次の行をコピーすると、
-# 遅い入力先が次の行を貼ることがある。これは別の改善で直す)。
-ROWS = ['# ghost e2e 1', '# ghost e2e 2']
+ROWS = ['# ghost e2e 1', '# ghost e2e 2', '# ghost e2e 3']
+# 入力先は Ctrl+V を受けてから 0.2 秒遅れて clipboard を読む。
+# Ctrl+V 直後に次の行をコピーすると、前の行の代わりに次の行が貼られてしまう。
+# 既定の PASTE_SETTLE_TIME (0.5 秒) なら、runner 自体の遅れを足しても間に合う。
+PASTE_DELAY_MS = 200
 
 
 @pytest.fixture
@@ -58,7 +60,8 @@ def desktop(tmp_path):
         processes.append(startInputGhost(textFile, keyOrder, waitTime))
         return processes[-1]
 
-    with Target(tmp_path, 'decoy') as decoy, Target(tmp_path, 'target') as target:
+    with Target(tmp_path, 'decoy') as decoy, \
+            Target(tmp_path, 'target', PASTE_DELAY_MS) as target:
         if not decoy.bringToFront():
             pytest.fail('No interactive foreground on this runner; nothing was sent.')
         try:
@@ -77,22 +80,22 @@ def switchDuringCountdown(process, target):
 
 
 @needs_hosted_windows
-def test_real_input_goes_only_to_the_window_chosen_during_countdown(desktop):
+def test_real_rows_reach_only_the_chosen_slow_target_in_order(desktop):
     start, decoy, target = desktop
-    process = start(ROWS[:1], ['copypaste', 'return'], 0.5)
+    process = start(ROWS, ['copypaste', 'return'], 0.5)
     switchDuringCountdown(process, target)
 
     out, err = process.communicate(timeout=60)
 
     assert process.returncode == 0, err
-    assert target.text() == '# ghost e2e 1\n'
+    assert target.text() == ''.join(row + '\n' for row in ROWS)
     assert decoy.text() == ''
 
 
 @needs_hosted_windows
 def test_real_focus_change_stops_before_next_paste(desktop):
     start, decoy, target = desktop
-    process = start(ROWS, ['return', 'copypaste'], 3)
+    process = start(ROWS[:2], ['return', 'copypaste'], 3)
     switchDuringCountdown(process, target)
 
     # 最初の Enter が届いたら前面を decoy に戻す。Ctrl+V の前 (3 秒待ちの間) に止まるはず。
