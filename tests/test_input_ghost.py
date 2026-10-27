@@ -4,6 +4,7 @@ Windows の入力(SendInput)・前面 window・クリップボード・アプリ
 本物のキー入力は絶対に送らない。'''
 
 import ctypes
+import re
 import shlex
 
 import pytest
@@ -577,15 +578,16 @@ def test_invalid_number_setting_stops_before_anything(
     monkeypatch.setattr(ig.InputGhost, '_TEXT_FILE_NAME', 'no-such-file.txt')
     monkeypatch.setattr(ig.pyperclip, 'paste', Forbidden())
 
-    with pytest.raises(
-            ig.GreenException,
-            match=rf'^{name} must be .+, but it is .+\. Nothing was sent\.$'):
-        ig.main(['--dry-run'] if dry_run else [])
+    assert ig.main(['--dry-run'] if dry_run else []) == 1
 
+    # stderr には「InputGhost: 理由」が 1 行だけ。traceback は出さない。
+    out, err = capsys.readouterr()
+    assert re.fullmatch(
+        rf'InputGhost: {name} must be .+, but it is .+\. Nothing was sent\.\n', err)
+    assert out == ''
     assert ghost.events == []
     assert ghost.copies == []
     assert ig.time.sleeps == 0
-    assert capsys.readouterr().out == ''
 
 
 def test_negative_wait_time_is_refused_before_the_first_key(ghost, monkeypatch):
@@ -613,6 +615,37 @@ def test_boundary_values_still_run(ghost, monkeypatch, name, value):
     assert ghost.clipboardText == USER_CLIPBOARD
 
 
+def test_successful_run_returns_zero_and_prints_nothing_to_stderr(ghost, capsys):
+    assert ig.main([]) == 0
+
+    assert capsys.readouterr().err == ''
+    assert ghost.events.count((86, 0)) == 3
+
+
+def test_refusal_with_a_multi_line_reason_is_still_one_line(ghost, monkeypatch, capsys):
+    # OS のエラー文などが理由に入って改行を含んでも、表示は 1 行にする。
+    def refuse(dryRun=False):
+        raise ig.GreenException('first part\nsecond part. Nothing was sent.')
+
+    monkeypatch.setattr(ig.InputGhost, 'run', refuse)
+
+    assert ig.main([]) == 1
+    assert capsys.readouterr().err == 'InputGhost: first part second part. Nothing was sent.\n'
+
+
+def test_unexpected_error_is_not_caught(ghost, monkeypatch, capsys):
+    # InputGhost のバグなどは、調べられるように traceback のまま外に出す。
+    def broken(dryRun=False):
+        raise RuntimeError('synthetic bug')
+
+    monkeypatch.setattr(ig.InputGhost, 'run', broken)
+
+    with pytest.raises(RuntimeError, match='synthetic bug'):
+        ig.main([])
+
+    assert capsys.readouterr().err == ''
+
+
 def test_invalid_key_order_is_rejected_before_any_input(ghost, monkeypatch):
     monkeypatch.setattr(ig.InputGhost, '_KEY_ORDER', ('0', 'typo'))
 
@@ -629,7 +662,7 @@ def test_dry_run_prints_plan_and_sends_nothing(ghost, monkeypatch, capsys):
     monkeypatch.setattr(ig.time, 'sleep', Forbidden())
     monkeypatch.setattr(ig.InputGhost, '_READY_TIME', False)
 
-    ig.main(['--dry-run'])
+    assert ig.main(['--dry-run']) == 0
 
     out = capsys.readouterr().out
     assert out.splitlines()[0].endswith('synthetic.txt (cp932)')

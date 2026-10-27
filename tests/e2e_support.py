@@ -31,7 +31,7 @@ if len(sys.argv) > 4:
     ghost._READY_TIME = False
     ghost._TARGET_APPLICATION = sys.argv[4]
     ghost._LAUNCH_TIMEOUT = float(sys.argv[5])
-InputGhost.main([])
+sys.exit(InputGhost.main([]))
 '''
 
 
