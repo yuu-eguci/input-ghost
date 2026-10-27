@@ -83,6 +83,14 @@ def desktop(tmp_path):
                 process.kill()
 
 
+def assertRefusal(err):
+    '''安全のために止まったときの stderr は「InputGhost: 理由」の 1 行だけ。'''
+
+    assert 'Traceback' not in err, err
+    lines = err.splitlines()
+    assert len(lines) == 1 and lines[0].startswith('InputGhost: '), err
+
+
 def switchDuringCountdown(process, target):
     '''カウントダウン中に入力先を前面にする。できなければ InputGhost を kill する。'''
 
@@ -122,7 +130,8 @@ def test_real_focus_change_stops_before_next_paste(desktop):
 
     out, err = process.communicate(timeout=60)
 
-    assert process.returncode != 0
+    assert process.returncode == 1, err
+    assertRefusal(err)
     assert 'Foreground window changed' in err
     assert 'before action 2/4' in err
     assert target.text() == '\n'
@@ -203,7 +212,8 @@ def test_real_launch_does_not_type_into_an_older_window(desktop, tmp_path):
         if pidFile.exists():
             killPid(int(pidFile.read_text()))
 
-    assert process.returncode != 0, err
+    assert process.returncode == 1, err
+    assertRefusal(err)
     assert 'did not come to the front' in err
     assert 'Nothing was sent' in err
     assert target.text() == ''
@@ -222,7 +232,8 @@ def test_real_non_text_clipboard_is_refused_and_left_untouched(desktop):
 
     out, err = process.communicate(timeout=60)
 
-    assert process.returncode != 0, err
+    assert process.returncode == 1, err
+    assertRefusal(err)
     assert 'non-text' in err
     assert 'Nothing was sent' in err
     assert target.text() == ''

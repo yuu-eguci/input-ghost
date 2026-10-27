@@ -43,6 +43,9 @@ windows専用。
 バージョン1.12
     数の設定 (NUM_CHARA_IN_ROW・READY_TIME・WAIT_TIME など) を最初に確かめて、
     おかしければ何も送らずに止まるようにした (前は最初の key を送ったあとで落ちることがあった)。
+バージョン1.13
+    安全のために止まるときは、traceback ではなく「InputGhost: 理由」の 1 行と終了コード 1 にした。
+    予期しないエラーは、調べられるように traceback のまま。
 '''
 
 
@@ -567,13 +570,21 @@ class GreenException(Exception):
 
 
 def main(argv=None):
+    '''コマンドの入り口。終了コードを返します (0: 終わった、1: 安全のために止まった)。'''
+
     parser = argparse.ArgumentParser(description='文章を別のアプリケーションに一行ずつコピペします。')
     parser.add_argument(
         '--dry-run', action='store_true',
         help='キー入力・クリップボード・アプリ起動をせず、予定の操作を表示するだけ。')
     args = parser.parse_args(argv)
-    InputGhost.run(dryRun=args.dry_run)
+    try:
+        InputGhost.run(dryRun=args.dry_run)
+    except GreenException as error:
+        # 止まった理由だけを 1 行で。ほかの例外 (バグ) は traceback のまま外に出します。
+        print('InputGhost: ' + ' '.join(str(error).splitlines()), file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
