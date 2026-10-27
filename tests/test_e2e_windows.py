@@ -113,7 +113,7 @@ def test_real_blocked_input_stops_without_typing(desktop):
         process.kill()
         pytest.fail(f'{error} InputGhost was killed.')
 
-    assert process.returncode != 0, err
+    assert process.returncode != 0, (target.text(), err)
     assert 'accepted only 0/4' in err
     assert target.text() == ''
     assert decoy.text() == ''
